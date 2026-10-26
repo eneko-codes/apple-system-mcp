@@ -4,7 +4,7 @@ import MCP
 public enum SystemMCPServer {
 
     public static let name = "apple-system-mcp"
-    public static let version = "1.0.0"
+    public static let version = "1.0.1"
 
     /// Returned from `initialize`. It carries what per-tool descriptions cannot state
     /// once: that every percentage is a two-reading measurement, and what an ordinary
