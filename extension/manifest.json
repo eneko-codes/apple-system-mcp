@@ -1,0 +1,71 @@
+{
+  "manifest_version": "0.3",
+  "name": "apple-system-mcp",
+  "display_name": "System",
+  "version": "1.0.0",
+  "description": "Read processes, CPU, memory, network, volumes and open sockets on this Mac",
+  "long_description": "A local MCP server written in Swift that reads the state of this Mac through the system's own C interfaces: libproc and sysctl for processes, Mach for CPU and memory, getifaddrs and the routing sysctl for network interfaces, getfsstat for volumes.\n\nsystem_overview gives the machine as a whole: macOS version and uptime, chip and core layout, CPU use, load average, memory and swap. system_processes lists processes by CPU, memory, name or pid. system_process inspects one pid. system_connections finds which process owns a port. system_network reports interface totals and rates. system_volumes reports free space.\n\nEvery percentage and rate is a measurement between two readings taken sample_ms apart, so those calls take at least that long. CPU % is a percentage of one core.\n\nThe server runs as you, and macOS only lets an ordinary process read the CPU, memory, descriptors and sockets of processes owned by the same user. Other processes are still listed, with their counters shown as n/a. That is a property of the machine, not a fault, and system_status reports the split.\n\nCommand-line arguments are returned only on request, because they can contain secrets; values that look like secrets are masked on a best-effort basis. A process's environment is never read.\n\nNothing is configured, no file contents are read, no network connection is made, and nothing is ever changed, stopped or signalled.\n\nNot affiliated with or endorsed by Apple Inc.",
+  "author": {
+    "name": "eneko-codes",
+    "url": "https://github.com/eneko-codes"
+  },
+  "homepage": "https://github.com/eneko-codes/apple-system-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eneko-codes/apple-system-mcp"
+  },
+  "license": "MIT",
+  "icon": "icon.png",
+  "keywords": [
+    "system",
+    "processes",
+    "cpu",
+    "memory",
+    "macos"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/apple-system-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/server/apple-system-mcp",
+      "args": [],
+      "env": {}
+    }
+  },
+  "tools": [
+    {
+      "name": "system_status",
+      "description": "Reports that this server is running and how many processes it can see and read. Call it first when a result shows n/a: it tells a limit of this machine from a fault."
+    },
+    {
+      "name": "system_overview",
+      "description": "The machine as a whole: macOS version and uptime, chip and core layout, CPU use over a short sample, load average, memory, memory pressure and swap. Memory in use is an approximation."
+    },
+    {
+      "name": "system_processes",
+      "description": "Lists processes with CPU %, memory, threads, owner and name, sorted by cpu, memory, name or pid. CPU % is of one core. Counters are readable only for processes of the same user; the rest show n/a."
+    },
+    {
+      "name": "system_process",
+      "description": "Everything readable about one pid: state, path, owner, parent, start time, CPU rate, memory, threads, disk, descriptors, working directory and children. Command-line arguments only on request, with likely secrets masked."
+    },
+    {
+      "name": "system_network",
+      "description": "Network interfaces with addresses, 64-bit cumulative byte, packet and error counters, and the current rate in each direction. Totals are per interface, not per process."
+    },
+    {
+      "name": "system_volumes",
+      "description": "Mounted volumes with file system, device, total size and the space an ordinary process may use. System-internal volumes are hidden unless requested."
+    },
+    {
+      "name": "system_connections",
+      "description": "Open TCP and UDP sockets with addresses, TCP state and the owning process. Finds which process listens on a port. Only sockets of the same user's processes are visible."
+    }
+  ],
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": [
+      "darwin"
+    ]
+  }
+}
