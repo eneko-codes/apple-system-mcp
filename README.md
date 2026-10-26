@@ -12,7 +12,8 @@ It calls the system's own C interfaces directly — libproc, sysctl, Mach, `geti
 `getfsstat` — with no helper programs, no shell, no network and no write of any kind.
 There is nothing to configure.
 
-Not affiliated with or endorsed by Apple Inc.
+Not affiliated with or endorsed by Apple Inc. The icon is the one macOS ships for the
+Activity Monitor app: it is Apple's artwork, used only to show what this server reads.
 
 ## Requirements
 
