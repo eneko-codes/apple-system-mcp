@@ -5,9 +5,20 @@ public enum ToolError: Error, Equatable {
     case badArgument(name: String, reason: String)
     case processNotFound(pid: Int32)
     case systemFailure(function: String, code: Int32)
+    case timedOut(seconds: Int)
 
     public var message: String {
         switch self {
+        case .timedOut(let seconds):
+            return """
+                The call did not finish within \(seconds) seconds and was abandoned. This \
+                server only reads, so nothing was changed.
+
+                A system call may be waiting on something that is not answering. Try again, \
+                with a lower sample_ms or a narrower filter; system_status says whether the \
+                server still answers at all.
+                """
+
         case .missingArgument(let name):
             return "Missing required argument '\(name)'."
 

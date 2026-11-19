@@ -359,3 +359,107 @@ public struct SocketRecord: Sendable, Equatable {
         }
     }
 }
+
+// MARK: Power
+
+/// One power source as the system describes it: the internal battery, or a UPS. Every
+/// field the system documents as optional is optional here. The hardware serial number the
+/// system also publishes is deliberately not carried: nothing in the answer needs it.
+public struct PowerSource: Sendable, Equatable {
+    public var name: String
+    public var kind: String?
+    /// "AC Power", "Battery Power" or "Off Line".
+    public var state: String?
+    public var isPresent: Bool
+    public var isCharging: Bool
+    public var isCharged: Bool
+    /// In percent for Apple's own sources; another source may use mAh. Only their ratio is
+    /// shown.
+    public var currentCapacity: Int?
+    public var maxCapacity: Int?
+    /// Minutes; -1 means the system is still working it out.
+    public var timeToEmptyMinutes: Int?
+    public var timeToFullMinutes: Int?
+    public var health: String?
+    public var healthCondition: String?
+    public var temperatureCelsius: Int?
+    public var voltageMillivolts: Int?
+    public var currentMilliamps: Int?
+    public var hasInternalFailure: Bool
+
+    public init(
+        name: String, kind: String?, state: String?, isPresent: Bool, isCharging: Bool,
+        isCharged: Bool, currentCapacity: Int?, maxCapacity: Int?, timeToEmptyMinutes: Int?,
+        timeToFullMinutes: Int?, health: String?, healthCondition: String?,
+        temperatureCelsius: Int?, voltageMillivolts: Int?, currentMilliamps: Int?,
+        hasInternalFailure: Bool
+    ) {
+        self.name = name
+        self.kind = kind
+        self.state = state
+        self.isPresent = isPresent
+        self.isCharging = isCharging
+        self.isCharged = isCharged
+        self.currentCapacity = currentCapacity
+        self.maxCapacity = maxCapacity
+        self.timeToEmptyMinutes = timeToEmptyMinutes
+        self.timeToFullMinutes = timeToFullMinutes
+        self.health = health
+        self.healthCondition = healthCondition
+        self.temperatureCelsius = temperatureCelsius
+        self.voltageMillivolts = voltageMillivolts
+        self.currentMilliamps = currentMilliamps
+        self.hasInternalFailure = hasInternalFailure
+    }
+}
+
+public struct PowerStatus: Sendable, Equatable {
+    /// What the Mac is running on right now: "AC Power", "Battery Power" or "UPS Power".
+    public var providing: String?
+    public var sources: [PowerSource]
+
+    public init(providing: String?, sources: [PowerSource]) {
+        self.providing = providing
+        self.sources = sources
+    }
+}
+
+// MARK: Disks
+
+/// One storage driver's cumulative counters since it was created, which is boot for the
+/// internal drive. `id` is the registry entry id, the only thing that tells two drives
+/// with the same BSD name apart between two readings.
+public struct DiskDevice: Sendable, Equatable {
+    public var id: UInt64
+    public var name: String
+    public var readBytes: UInt64
+    public var writtenBytes: UInt64
+    public var readOperations: UInt64
+    public var writtenOperations: UInt64
+    public var readTimeNanoseconds: UInt64
+    public var writeTimeNanoseconds: UInt64
+
+    public init(
+        id: UInt64, name: String, readBytes: UInt64, writtenBytes: UInt64, readOperations: UInt64,
+        writtenOperations: UInt64, readTimeNanoseconds: UInt64, writeTimeNanoseconds: UInt64
+    ) {
+        self.id = id
+        self.name = name
+        self.readBytes = readBytes
+        self.writtenBytes = writtenBytes
+        self.readOperations = readOperations
+        self.writtenOperations = writtenOperations
+        self.readTimeNanoseconds = readTimeNanoseconds
+        self.writeTimeNanoseconds = writeTimeNanoseconds
+    }
+}
+
+public struct DiskSnapshot: Sendable, Equatable {
+    public var takenAtNanoseconds: UInt64
+    public var devices: [DiskDevice]
+
+    public init(takenAtNanoseconds: UInt64, devices: [DiskDevice]) {
+        self.takenAtNanoseconds = takenAtNanoseconds
+        self.devices = devices
+    }
+}

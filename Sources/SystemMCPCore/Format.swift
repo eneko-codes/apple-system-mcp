@@ -404,6 +404,107 @@ public struct Format: Sendable {
         return text
     }
 
+    // MARK: Battery
+
+    /// Pushes a block four spaces right, so a source's rows sit under its name.
+    static func indented(_ text: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false).map { "    " + $0 }
+            .joined(separator: "\n")
+    }
+
+    /// "42m", "3h 5m": minutes are what the system reports, so seconds would be noise.
+    static func minutes(_ count: Int) -> String {
+        count < 60 ? "\(count)m" : "\(count / 60)h \(count % 60)m"
+    }
+
+    public func battery(_ status: PowerStatus) -> String {
+        var text = status.providing.map { "Running on: \($0)." } ?? "Power source in use: unknown."
+        guard !status.sources.isEmpty else {
+            return text + "\n\nNo battery or UPS found on this Mac."
+        }
+        text += " \(Self.plural(status.sources.count, "power source")).\n"
+        text += status.sources.map { source in
+            var rows: [(String, String?)] = []
+            if !source.isPresent {
+                rows.append(("state", "not present"))
+                return "\n  \(Self.oneLine(source.name))" + (source.kind.map { " (\(Self.oneLine($0)))" } ?? "")
+                    + "\n" + Self.indented(Self.block(rows))
+            }
+            var charge: [String] = []
+            if let current = source.currentCapacity, let maximum = source.maxCapacity, maximum > 0 {
+                charge.append("\(current * 100 / maximum)%")
+            }
+            let discharging = source.state == "Battery Power" && !source.isCharging
+            if source.isCharged {
+                charge.append("fully charged")
+            } else if source.isCharging {
+                charge.append("charging")
+                if let toFull = source.timeToFullMinutes {
+                    charge.append(toFull < 0 ? "time to full still being calculated" : "\(Self.minutes(toFull)) until full")
+                }
+            } else if discharging {
+                charge.append("discharging")
+                if let toEmpty = source.timeToEmptyMinutes {
+                    charge.append(toEmpty < 0 ? "time left still being calculated" : "\(Self.minutes(toEmpty)) left")
+                }
+            } else {
+                charge.append("not charging")
+            }
+            rows.append(("charge", charge.joined(separator: ", ")))
+            rows.append(("power", source.state))
+            rows.append(("health", [source.health, source.healthCondition].compactMap { $0 }.joined(separator: ", ")))
+            var electrical: [String] = []
+            if let millivolts = source.voltageMillivolts {
+                electrical.append(String(format: "%.1f V", Double(millivolts) / 1000))
+            }
+            if let milliamps = source.currentMilliamps { electrical.append("\(milliamps) mA") }
+            if let celsius = source.temperatureCelsius { electrical.append("\(celsius) °C") }
+            rows.append(("electrical", electrical.joined(separator: " · ")))
+            if source.hasInternalFailure { rows.append(("warning", "the source reports an internal failure")) }
+            return "\n  \(Self.oneLine(source.name))" + (source.kind.map { " (\(Self.oneLine($0)))" } ?? "")
+                + "\n" + Self.indented(Self.block(rows))
+        }.joined(separator: "\n")
+        return text
+    }
+
+    // MARK: Disks
+
+    public struct DiskRate: Sendable, Equatable {
+        public var readBytesPerSecond: Double?
+        public var writtenBytesPerSecond: Double?
+        public var readsPerSecond: Double?
+        public var writesPerSecond: Double?
+        public var readLatencyNanoseconds: Double?
+        public var writeLatencyNanoseconds: Double?
+    }
+
+    static func operationsPerSecond(_ rate: Double?, _ noun: String) -> String {
+        rate.map { "\(Int($0.rounded())) \(noun)/s" } ?? "n/a"
+    }
+
+    static func latency(_ nanoseconds: Double?) -> String {
+        nanoseconds.map { String(format: "%.1f ms", $0 / 1_000_000) } ?? "n/a"
+    }
+
+    public func disks(devices: [DiskDevice], rates: [UInt64: DiskRate]?, sampleMilliseconds: Int) -> String {
+        var text = "Storage drivers: \(devices.count). Totals are since each driver started, which is boot"
+        text += " for the internal drive"
+        text += rates == nil ? "." : "; rates are over \(sampleMilliseconds) ms."
+        guard !devices.isEmpty else { return text + "\n\n  (none)" }
+
+        return text + "\n\n" + devices.map { device in
+            let total = "\(Self.bytes(device.readBytes)) read (\(device.readOperations) operations)"
+                + " · \(Self.bytes(device.writtenBytes)) written (\(device.writtenOperations) operations)"
+            guard let rates else { return "  \(Self.oneLine(device.name))\n      \(total)" }
+            let rate = rates[device.id]
+            let reads = "read \(Self.bytesPerSecond(rate?.readBytesPerSecond)) · "
+                + "\(Self.operationsPerSecond(rate?.readsPerSecond, "reads")) · average \(Self.latency(rate?.readLatencyNanoseconds))"
+            let writes = "write \(Self.bytesPerSecond(rate?.writtenBytesPerSecond)) · "
+                + "\(Self.operationsPerSecond(rate?.writesPerSecond, "writes")) · average \(Self.latency(rate?.writeLatencyNanoseconds))"
+            return "  \(Self.oneLine(device.name))\n      \(reads)\n      \(writes)\n      total: \(total)"
+        }.joined(separator: "\n")
+    }
+
     // MARK: Status
 
     public func status(

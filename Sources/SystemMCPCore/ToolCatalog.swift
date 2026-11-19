@@ -1,5 +1,4 @@
 import Foundation
-import MCP
 
 /// The catalogue is the authorisation surface: a tool that is not listed here cannot be
 /// called, and the name it is listed under is the label on the permission switch in
@@ -13,11 +12,15 @@ public enum ToolCatalog {
     public static let networkName = "system_network"
     public static let volumesName = "system_volumes"
     public static let connectionsName = "system_connections"
+    public static let batteryName = "system_battery"
+    public static let disksName = "system_disks"
 
     public static let sampleRange = 100...5000
     public static let networkSampleRange = 0...5000
     public static let defaultSampleMilliseconds = 500
     public static let defaultNetworkSampleMilliseconds = 1000
+    public static let diskSampleRange = 0...5000
+    public static let defaultDiskSampleMilliseconds = 1000
     public static let processLimitRange = 1...200
     public static let defaultProcessLimit = 25
     public static let connectionLimitRange = 1...500
@@ -28,7 +31,7 @@ public enum ToolCatalog {
     public static let socketProtocols = ["tcp", "udp", "all"]
 
     public static func all() -> [Tool] {
-        [status, overview, processes, process, network, volumes, connections]
+        [status, overview, processes, process, network, volumes, connections, battery, disks]
     }
 
     // MARK: Schema helpers
@@ -264,6 +267,45 @@ public enum ToolCatalog {
             "limit": integer(
                 "Maximum number of sockets to return.", range: connectionLimitRange,
                 default: defaultConnectionLimit),
+        ]),
+        annotations: readOnly)
+
+    static let battery = Tool(
+        name: batteryName,
+        title: "Battery and power source",
+        description: """
+            What the Mac is running on (mains, battery or a UPS) and, for each battery or \
+            UPS: charge level, whether it is charging, discharging or full, the time to \
+            empty or to full the system estimates, its health verdict and, where the \
+            system publishes them, temperature, voltage and current.
+
+            A Mac with no battery (a desktop) answers that none was found; that is not an \
+            error. A time of "still being calculated" is the system's own state right \
+            after a change of power source, not a fault. The battery's serial number is \
+            never returned, and cycle count is not available through the system's \
+            documented power-source interface.
+            """,
+        inputSchema: object(properties: [:]),
+        annotations: readOnly)
+
+    static let disks = Tool(
+        name: disksName,
+        title: "Disk throughput and latency",
+        description: """
+            Read and write activity of each storage driver (the internal drive, an \
+            external disk): bytes and operations since the driver started, and, measured \
+            between two readings sample_ms apart, bytes per second, operations per second \
+            and the average time one operation took.
+
+            A drive is named by its BSD name (disk0), never by model or serial number. \
+            These are whole-drive counters: the system offers no per-process or per-file \
+            figure through this interface. For free space on a volume use system_volumes. \
+            sample_ms 0 returns totals only.
+            """,
+        inputSchema: object(properties: [
+            "sample_ms": integer(
+                "Milliseconds between the two readings a rate needs; 0 returns totals only.",
+                range: diskSampleRange, default: defaultDiskSampleMilliseconds)
         ]),
         annotations: readOnly)
 }

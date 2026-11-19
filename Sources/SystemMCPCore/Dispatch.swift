@@ -1,9 +1,52 @@
 import Foundation
-import MCP
+import Synchronization
 
 /// Waits this many milliseconds. A parameter so the tests drive the two-reading tools
 /// without waiting and with scripted readings.
 public typealias Sleep = @Sendable (Int) async throws -> Void
+
+/// Returns the first of two outcomes: the work finishing, or the limit passing.
+///
+/// The timer is a dispatch timer, not a `Task.sleep`, and the work is not a child of a task
+/// group. A synchronous system call that never returns holds its thread and cannot be
+/// cancelled, and a task group would wait for it forever; a timer on the cooperative pool
+/// could be starved by the same stuck threads. The stuck work is abandoned, not stopped:
+/// its late result is discarded.
+enum Deadline {
+
+    private final class Outcome<Value: Sendable>: Sendable {
+        private let continuation: Mutex<CheckedContinuation<Value?, Never>?>
+
+        init(_ continuation: CheckedContinuation<Value?, Never>) {
+            self.continuation = Mutex(continuation)
+        }
+
+        /// Only the first caller resumes; the other finds it empty.
+        func resume(returning value: Value?) {
+            continuation.withLock { pending in
+                pending?.resume(returning: value)
+                pending = nil
+            }
+        }
+    }
+
+    /// `nil` when `limit` passed before `work` finished.
+    static func run<Value: Sendable>(
+        within limit: Duration, _ work: @escaping @Sendable () async -> Value
+    ) async -> Value? {
+        let seconds = Double(limit.components.seconds) + Double(limit.components.attoseconds) / 1e18
+        return await withCheckedContinuation { continuation in
+            let outcome = Outcome<Value>(continuation)
+            let task = Task {
+                outcome.resume(returning: await work())
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) {
+                outcome.resume(returning: nil)
+                task.cancel()
+            }
+        }
+    }
+}
 
 /// Routes a `tools/call` to the source and renders the answer.
 ///
@@ -13,29 +56,52 @@ public struct SystemTools: Sendable {
     private let source: any SystemSource
     private let sleep: Sleep
     private let now: @Sendable () -> Date
+    private let timeout: Duration
     private let format = Format()
+
+    /// The longest legitimate call is a 5 s sample plus a few readings. The limit stays
+    /// well under the 60 s a client commonly waits, so the answer is ours and not the
+    /// client's generic "no result".
+    public static let defaultTimeout = Duration.seconds(30)
 
     public init(
         source: any SystemSource,
         sleep: @escaping Sleep = { try await Task.sleep(for: .milliseconds($0)) },
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        timeout: Duration = SystemTools.defaultTimeout
     ) {
         self.source = source
         self.sleep = sleep
         self.now = now
+        self.timeout = timeout
     }
 
-    public func handle(_ parameters: CallTool.Parameters) async -> CallTool.Result {
+    public func handle(_ parameters: ToolCall) async -> ToolOutput {
         let started = ContinuousClock.now
-        do {
-            let text = try await run(parameters)
-            return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
-        } catch {
-            Diagnostics.toolFailed(parameters.name, error: error, since: started)
-            return .init(
-                content: [.text(text: Self.message(for: error), annotations: nil, _meta: nil)],
-                isError: true)
+        let outcome = await Deadline.run(within: timeout) {
+            do {
+                return Result<String, any Error>.success(try await run(parameters))
+            } catch {
+                return .failure(error)
+            }
         }
+        switch outcome {
+        case .success(let text)?:
+            return ToolOutput(text: text, isError: false)
+        case .failure(let error)?:
+            return failure(error, tool: parameters.name, since: started)
+        case nil:
+            return failure(
+                ToolError.timedOut(seconds: Int(timeout.components.seconds)),
+                tool: parameters.name, since: started)
+        }
+    }
+
+    private func failure(
+        _ error: any Error, tool: String, since started: ContinuousClock.Instant
+    ) -> ToolOutput {
+        Diagnostics.toolFailed(tool, error: error, since: started)
+        return ToolOutput(text: Self.message(for: error), isError: true)
     }
 
     /// Only our own error types are described. Anything else becomes a generic failure, so
@@ -53,7 +119,7 @@ public struct SystemTools: Sendable {
         }
     }
 
-    private func run(_ parameters: CallTool.Parameters) async throws -> String {
+    private func run(_ parameters: ToolCall) async throws -> String {
         let arguments = Arguments(parameters.arguments)
 
         switch parameters.name {
@@ -64,6 +130,8 @@ public struct SystemTools: Sendable {
         case ToolCatalog.networkName: return try await network(arguments)
         case ToolCatalog.volumesName: return try volumes(arguments)
         case ToolCatalog.connectionsName: return try connections(arguments)
+        case ToolCatalog.batteryName: return try battery()
+        case ToolCatalog.disksName: return try await disks(arguments)
         default:
             throw ToolError.badArgument(
                 name: "name", reason: "'\(parameters.name)' is not a tool of this server")
@@ -331,6 +399,64 @@ public struct SystemTools: Sendable {
         return format.connections(
             rows: Array(rows), matching: matching.count, readableProcesses: readable,
             visibleProcesses: processes.records.count)
+    }
+
+    // MARK: Battery
+
+    private func battery() throws -> String {
+        format.battery(try source.powerStatus())
+    }
+
+    // MARK: Disks
+
+    private func disks(_ arguments: Arguments) async throws -> String {
+        let sample = try arguments.int(
+            "sample_ms", default: ToolCatalog.defaultDiskSampleMilliseconds,
+            in: ToolCatalog.diskSampleRange)
+
+        var latest = try source.diskSnapshot()
+        var rates: [UInt64: Format.DiskRate]?
+        if sample > 0 {
+            try await sleep(sample)
+            let earlier = latest
+            latest = try source.diskSnapshot()
+            let elapsed = latest.takenAtNanoseconds &- earlier.takenAtNanoseconds
+            let before = Dictionary(
+                earlier.devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            var computed: [UInt64: Format.DiskRate] = [:]
+            for device in latest.devices {
+                guard let previous = before[device.id] else { continue }
+                computed[device.id] = Format.DiskRate(
+                    readBytesPerSecond: Metrics.bytesPerSecond(
+                        before: previous.readBytes, after: device.readBytes, elapsedNanoseconds: elapsed),
+                    writtenBytesPerSecond: Metrics.bytesPerSecond(
+                        before: previous.writtenBytes, after: device.writtenBytes,
+                        elapsedNanoseconds: elapsed),
+                    readsPerSecond: Metrics.bytesPerSecond(
+                        before: previous.readOperations, after: device.readOperations,
+                        elapsedNanoseconds: elapsed),
+                    writesPerSecond: Metrics.bytesPerSecond(
+                        before: previous.writtenOperations, after: device.writtenOperations,
+                        elapsedNanoseconds: elapsed),
+                    readLatencyNanoseconds: Self.latency(
+                        previous.readTimeNanoseconds, device.readTimeNanoseconds,
+                        previous.readOperations, device.readOperations),
+                    writeLatencyNanoseconds: Self.latency(
+                        previous.writeTimeNanoseconds, device.writeTimeNanoseconds,
+                        previous.writtenOperations, device.writtenOperations))
+            }
+            rates = computed
+        }
+        return format.disks(devices: latest.devices, rates: rates, sampleMilliseconds: sample)
+    }
+
+    /// `nil` when a counter went backwards, as with every other rate here.
+    private static func latency(_ timeBefore: UInt64, _ timeAfter: UInt64, _ opsBefore: UInt64, _ opsAfter: UInt64)
+        -> Double?
+    {
+        guard timeAfter >= timeBefore, opsAfter >= opsBefore else { return nil }
+        return Metrics.averageLatencyNanoseconds(
+            timeDelta: timeAfter - timeBefore, operationsDelta: opsAfter - opsBefore)
     }
 
     static var binaryPath: String {
