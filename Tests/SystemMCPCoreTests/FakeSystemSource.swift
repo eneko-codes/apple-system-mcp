@@ -31,6 +31,9 @@ final class FakeSystemSource: SystemSource {
         var volumes: [Volume] = []
         var sockets: [SocketRecord] = []
         var clock: UInt64 = 0
+        /// When set, `processSnapshot` blocks its calling thread until the test signals it:
+        /// a stand-in for a kernel call that does not return.
+        var blockProcessSnapshot: DispatchSemaphore?
     }
 
     let state = Mutex(State())
@@ -64,7 +67,9 @@ final class FakeSystemSource: SystemSource {
     }
 
     func processSnapshot() throws -> ProcessSnapshot {
-        state.withLock { Self.next(&$0.processSnapshots) }
+        // Waited on outside the lock so the test can still reach the state.
+        state.withLock { $0.blockProcessSnapshot }?.wait()
+        return state.withLock { Self.next(&$0.processSnapshots) }
             ?? ProcessSnapshot(takenAtNanoseconds: 0, records: [:])
     }
 
@@ -186,10 +191,12 @@ struct ToolResult {
 
 func call(
     _ tool: String, _ arguments: [String: Value] = [:], source: FakeSystemSource,
-    sleeps: SleepRecorder = SleepRecorder()
+    sleeps: SleepRecorder = SleepRecorder(),
+    sleep: Sleep? = nil, timeout: Duration = SystemTools.defaultTimeout
 ) async -> ToolResult {
     let tools = SystemTools(
-        source: source, sleep: { sleeps.record($0) }, now: { Date(timeIntervalSince1970: 1_000_000 + 90_000) })
+        source: source, sleep: sleep ?? { sleeps.record($0) },
+        now: { Date(timeIntervalSince1970: 1_000_000 + 90_000) }, timeout: timeout)
     let result = await tools.handle(.init(name: tool, arguments: arguments))
     var text = ""
     for case .text(let part, _, _) in result.content { text += part }

@@ -4,7 +4,7 @@ import MCP
 public enum SystemMCPServer {
 
     public static let name = "apple-system-mcp"
-    public static let version = "1.0.1"
+    public static let version = "1.0.2"
 
     /// Returned from `initialize`. It carries what per-tool descriptions cannot state
     /// once: that every percentage is a two-reading measurement, and what an ordinary
@@ -30,6 +30,10 @@ public enum SystemMCPServer {
         processes owned by the same user. Everything else shows n/a, and listings say how \
         many rows are affected. That is a property of the machine, not a fault, and not \
         something to work around. system_status reports the split.
+
+        EVERY CALL IS BOUNDED. A call that has not finished after 30 seconds is abandoned \
+        and answered with an error saying so; nothing is changed, because nothing is ever \
+        written. Retry with a lower sample_ms or a narrower filter.
 
         pids are reused and go stale quickly: list again before using one seen a while ago.
 
