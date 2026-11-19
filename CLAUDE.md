@@ -12,11 +12,13 @@ Read-only server — there is nothing to modify or delete, and nothing is config
 
 **Debugging against live data is legitimate, but it is the owner's call, not yours.** Never decide it alone. Ask in chat as an explicit choice they can pick — not a remark inside a longer message — saying exactly what you will run, exactly which live data it would touch, and what it would create, change or delete and whether that is undoable. A yes covers that run only; a wider or different check needs a fresh question. Be specific about what each tool reveals: `system_processes` names and owners every running program; `system_connections` names the programs listening on ports; `system_process` with `include_arguments` returns command lines.
 
+`DarwinSelfTests` does not read the battery or the storage drivers; their decoders are pure functions tested on invented dictionaries. Reading the real ones (`system_battery` shows the charge of this machine, `system_disks` its drive activity) is the owner's call, asked like any other live read.
+
 **There is no temp-directory fixture for this API.** The data lives in the kernel, not in files, so `$TMPDIR` does not help; a double is the only fixture, and the ask is the only route to the real thing. This server only reads, so the one question is ever whether to read the owner's real machine state — but it is still a question, and still theirs to answer.
 
 ## What this is
 
-A local MCP server (Swift 6, stdio transport) that reads the state of a Mac: processes, CPU, memory, network interfaces, mounted volumes and open sockets, through libproc, sysctl, Mach, `getifaddrs` and `getfsstat`. No Apple events, no helper programs, no shell, no network, no write of any kind, no user configuration.
+A local MCP server (Swift 6, stdio transport) that reads the state of a Mac: processes, CPU, memory, network interfaces, mounted volumes, open sockets, the battery and storage activity, through libproc, sysctl, Mach, `getifaddrs`, `getfsstat` and IOKit. No Apple events, no helper programs, no shell, no network, no write of any kind, no user configuration, **no third-party dependency**: `Package.swift` lists none, and the MCP protocol (JSON-RPC over stdio) is `MCPServer.swift` over Foundation. Adding a package needs the owner's say-so.
 
 ## System interfaces
 
@@ -32,7 +34,9 @@ Grounded in the SDK headers and in `sysctl` run on this machine, not in recollec
 - **Open-file paths** (`PROC_PIDFDVNODEPATHINFO`), **thread lists** (`PROC_PIDLISTTHREADS`, `PROC_PIDTHREADINFO`) and **memory regions** (`PROC_PIDREGIONINFO`): readable, left out as not worth the privacy cost or the surface. Only the descriptor *count* is reported.
 - **Per-process network traffic.** No public function offers it; the only source found is a command-line tool, not a C interface.
 - **CPU frequency and thermal state.** `hw.cpufrequency` is empty on Apple silicon and `kern.thermalstate` does not exist. `ProcessInfo.thermalState` would answer the latter; it is not used.
-- **IOKit** (battery, power assertions, sensors) and **GPU and energy figures.** Out of scope for this server.
+- **The battery's registry entry** (`AppleSmartBattery`): cycle count, serial number and raw capacities live there under names no public header documents, so only the documented `IOPS*` interface is read. Cycle count is therefore not offered.
+- **Power assertions, sensors, GPU and energy figures.** Out of scope for this server.
+- **A drive's model, serial number and the SMART data** under `IOBlockStorageDriver`'s parents: identifiers, left out. A drive is named by the BSD name of its whole-disk `IOMedia`.
 - **32-bit interface counters** from `getifaddrs` (`ifa_data` points at an `if_data` whose `ifi_ibytes` is `u_int32_t`). Interface totals come from `NET_RT_IFLIST2` and `if_data64` instead.
 - **`host_statistics` with `HOST_VM_INFO`** (32-bit counters); `host_statistics64` is used.
 - **`statfs64`, `fstatfs64`, `getfsstat64`, `getmntinfo64`**: deprecated since macOS 10.6 in `sys/mount.h`.
@@ -44,6 +48,8 @@ Grounded in the SDK headers and in `sysctl` run on this machine, not in recollec
 - **`proc_listallpids` and `proc_listchildpids` return a count of pids**, while the buffer size argument is in bytes.
 - **Per-core scheduler ticks are 32 bits and wrap**, each core on its own. `Metrics` differences every core separately before adding.
 - **A socket port is stored in network byte order in the low 16 bits of an `int`.**
+- **Battery capacity is percent for Apple's own power sources**, per `IOPSKeys.h`; another source may use mAh, so only the ratio is shown. A time of -1 means the system is still working it out.
+- **Disk counters are per driver and since it was created.** `Total Time` is nanoseconds. Swift does not import the `kIOBlockStorageDriverStatistics*Key` macros, so the strings in `DarwinSystemSource+Disks.swift` copy them from `IOBlockStorageDriver.h`.
 - **Without root, only same-user processes answer** `PROC_PIDTBSDINFO`, `PROC_PIDTASKINFO`, `proc_pid_rusage`, `PROC_PIDLISTFDS` and `KERN_PROCARGS2`. `PROC_PIDT_SHORTBSDINFO` and `proc_pidpath` answer for every process. Tools show `n/a` for the rest and must say how many rows are affected.
 
 ## Commands

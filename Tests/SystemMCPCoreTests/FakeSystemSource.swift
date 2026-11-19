@@ -1,5 +1,4 @@
 import Foundation
-import MCP
 import Synchronization
 
 @testable import SystemMCPCore
@@ -34,6 +33,9 @@ final class FakeSystemSource: SystemSource {
         /// When set, `processSnapshot` blocks its calling thread until the test signals it:
         /// a stand-in for a kernel call that does not return.
         var blockProcessSnapshot: DispatchSemaphore?
+        var power = PowerStatus(providing: nil, sources: [])
+        var powerError: Error?
+        var diskSnapshots: [DiskSnapshot] = []
     }
 
     let state = Mutex(State())
@@ -125,6 +127,18 @@ final class FakeSystemSource: SystemSource {
 
     func volumes() throws -> [Volume] { state.withLock { $0.volumes } }
     func sockets() throws -> [SocketRecord] { state.withLock { $0.sockets } }
+
+    func powerStatus() throws -> PowerStatus {
+        try state.withLock {
+            if let error = $0.powerError { throw error }
+            return $0.power
+        }
+    }
+
+    func diskSnapshot() throws -> DiskSnapshot {
+        state.withLock { Self.next(&$0.diskSnapshots) }
+            ?? DiskSnapshot(takenAtNanoseconds: 0, devices: [])
+    }
 }
 
 // MARK: Builders for invented data
@@ -197,8 +211,6 @@ func call(
     let tools = SystemTools(
         source: source, sleep: sleep ?? { sleeps.record($0) },
         now: { Date(timeIntervalSince1970: 1_000_000 + 90_000) }, timeout: timeout)
-    let result = await tools.handle(.init(name: tool, arguments: arguments))
-    var text = ""
-    for case .text(let part, _, _) in result.content { text += part }
-    return ToolResult(text: text, isError: result.isError ?? false)
+    let result = await tools.handle(ToolCall(name: tool, arguments: arguments))
+    return ToolResult(text: result.text, isError: result.isError)
 }

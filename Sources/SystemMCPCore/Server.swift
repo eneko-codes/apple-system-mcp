@@ -1,26 +1,27 @@
 import Foundation
-import MCP
 
 public enum SystemMCPServer {
 
     public static let name = "apple-system-mcp"
-    public static let version = "1.0.2"
+    public static let version = "1.1.0"
 
     /// Returned from `initialize`. It carries what per-tool descriptions cannot state
     /// once: that every percentage is a two-reading measurement, and what an ordinary
     /// process is and is not allowed to read.
     public static let instructions = """
         Reads the state of this Mac: processes, CPU, memory, network interfaces, mounted \
-        volumes and open sockets, through the system's own C interfaces (libproc, sysctl, \
-        Mach, getifaddrs, getfsstat). No file contents, no network connection, and nothing \
-        is ever changed, stopped or signalled.
+        volumes, open sockets, the battery and storage activity, through the system's own \
+        interfaces (libproc, sysctl, Mach, getifaddrs, getfsstat, IOKit). No file contents, no \
+        network connection, and nothing is ever changed, stopped or signalled.
 
         Start with system_overview for the machine as a whole, or system_processes for \
         what is using it. system_process inspects one pid, system_connections finds which \
-        process owns a port, system_network and system_volumes cover traffic and disk space.
+        process owns a port, system_network and system_volumes cover traffic and disk space, \
+        system_battery reports the power source and battery, and system_disks the read and \
+        write activity of each drive.
 
-        TWO READINGS PER PERCENTAGE. CPU use, a process's CPU % and network rates are \
-        measured between two readings taken sample_ms apart. Each tool takes both itself, \
+        TWO READINGS PER PERCENTAGE. CPU use, a process's CPU % and network and disk rates \
+        are measured between two readings taken sample_ms apart. Each tool takes both itself, \
         so those calls take at least that long (default 500 ms, up to 5000). A longer \
         sample smooths bursts. CPU % is of ONE core: 100 is one core busy, 400 is four.
 
@@ -51,23 +52,19 @@ public enum SystemMCPServer {
 
     /// The source is a parameter so the whole server can be driven by a double. Nothing in
     /// this function reads the machine by itself.
-    public static func run(source: any SystemSource = DarwinSystemSource()) async throws {
-        let tools = SystemTools(source: source)
-        let server = Server(
-            name: name,
-            version: version,
-            instructions: instructions,
-            capabilities: .init(tools: .init(listChanged: false))
-        )
-
-        await server.withMethodHandler(ListTools.self) { _ in .init(tools: ToolCatalog.all()) }
-        await server.withMethodHandler(CallTool.self) { await tools.handle($0) }
-
-        // The default StdioTransport logger is a no-op handler. Leave it that way: a
-        // logger writing to stdout would interleave with the JSON-RPC stream and break
-        // every response after the first log line.
+    ///
+    /// stdout is the JSON-RPC stream and carries nothing else: a stray line there breaks
+    /// every response after it. Diagnostics go to stderr.
+    public static func run(source: any SystemSource = DarwinSystemSource()) async {
+        let handler = MCPHandler(tools: SystemTools(source: source))
         Diagnostics.started(version: version)
-        try await server.start(transport: StdioTransport())
-        await server.waitUntilCompleted()
+        await serve(
+            lines: FileHandle.standardInput.bytes.lines, handler: handler,
+            write: { reply in
+                // One write per line, so concurrent replies cannot interleave halves of
+                // lines. `try?`: the throwing overload reports a closed pipe as an error,
+                // where the plain `write(_:)` raises an exception Swift cannot catch.
+                try? FileHandle.standardOutput.write(contentsOf: Data((reply + "\n").utf8))
+            })
     }
 }

@@ -1,6 +1,5 @@
 import Dispatch
 import Foundation
-import MCP
 import Testing
 
 @testable import SystemMCPCore

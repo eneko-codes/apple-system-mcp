@@ -55,6 +55,13 @@ public enum Metrics {
         return Double(used) / Double(elapsedNanoseconds) * 100
     }
 
+    /// Mean time one operation took between two readings. `nil` when none completed,
+    /// because a latency of nothing is not zero.
+    public static func averageLatencyNanoseconds(timeDelta: UInt64, operationsDelta: UInt64) -> Double? {
+        guard operationsDelta > 0 else { return nil }
+        return Double(timeDelta) / Double(operationsDelta)
+    }
+
     /// Bytes per second between two cumulative counters. `nil` if the counter went
     /// backwards, which happens when an interface is reset.
     public static func bytesPerSecond(

@@ -27,6 +27,9 @@ public protocol SystemSource: Sendable {
     func networkSnapshot() throws -> NetworkSnapshot
     func volumes() throws -> [Volume]
     func sockets() throws -> [SocketRecord]
+
+    func powerStatus() throws -> PowerStatus
+    func diskSnapshot() throws -> DiskSnapshot
 }
 
 /// A failed system call. Carries the function and the error code, never anything that

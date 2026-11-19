@@ -5,12 +5,13 @@
 # apple-system-mcp
 
 A local MCP server, written in Swift, that lets Claude read the state of this Mac:
-processes, CPU, memory, network interfaces, mounted volumes and open sockets. It ships as a
-Claude extension.
+processes, CPU, memory, network interfaces, mounted volumes, open sockets, the battery and
+storage activity. It ships as a Claude extension.
 
-It calls the system's own C interfaces directly — libproc, sysctl, Mach, `getifaddrs`,
-`getfsstat` — with no helper programs, no shell, no network and no write of any kind.
-There is nothing to configure.
+It calls the system's own interfaces directly — libproc, sysctl, Mach, `getifaddrs`,
+`getfsstat`, IOKit — with no helper programs, no shell, no network, no write of any kind
+and no third-party code: the package has no dependencies, and the MCP protocol over stdio
+is implemented here with Foundation. There is nothing to configure.
 
 Not affiliated with or endorsed by Apple Inc. The icon is the one macOS ships for the
 Activity Monitor app: it is Apple's artwork, used only to show what this server reads.
@@ -32,6 +33,8 @@ Activity Monitor app: it is Apple's artwork, used only to show what this server 
 | `system_network` | read | Interfaces with addresses, 64-bit cumulative counters and the current rate in each direction. |
 | `system_volumes` | read | Mounted volumes with file system, device, total size and the space an ordinary process may use. |
 | `system_connections` | read | Open TCP and UDP sockets with addresses, TCP state and the owning process. |
+| `system_battery` | read | What the Mac runs on (mains, battery, UPS) and each battery's charge, charging state, time to empty or full, health, temperature and voltage. A desktop answers that it has none. |
+| `system_disks` | read | Read and write activity of each storage driver: totals since boot, and bytes, operations per second and average latency over a short sample. |
 
 ## Frameworks and APIs
 
@@ -58,8 +61,10 @@ The BSD calls have manual pages, which Apple archives
 | `getfsstat` | Mounted volumes | [getfsstat(2)](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/getfsstat.2.html) |
 | `getloadavg` | Load average | [getloadavg(3)](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/getloadavg.3.html) |
 | `getpwuid_r` | User name from a uid | [getpwuid(3)](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/getpwuid.3.html) |
+| `IOPSCopyPowerSourcesInfo`, `IOPSCopyPowerSourcesList`, `IOPSGetPowerSourceDescription`, `IOPSGetProvidingPowerSourceType` and the `kIOPS*Key` constants | Battery and UPS state | `IOKit/ps/IOPowerSources.h`, `IOKit/ps/IOPSKeys.h` |
+| `IOServiceGetMatchingServices` (`IOBlockStorageDriver`), `IOIteratorNext`, `IORegistryEntryGetRegistryEntryID`, `IORegistryEntryCreateCFProperty` (`Statistics`, `BSD Name`), `IORegistryEntryGetChildIterator` | Per-drive bytes, operations and time; the drive's BSD name | `IOKit/IOKitLib.h`, `IOKit/storage/IOBlockStorageDriver.h` |
 | Foundation [`ProcessInfo`](https://developer.apple.com/documentation/foundation/processinfo), [`ISO8601DateFormatter`](https://developer.apple.com/documentation/foundation/iso8601dateformatter), [`FileHandle`](https://developer.apple.com/documentation/foundation/filehandle) | Own pid and name, timestamps, the diagnostic log on stderr | |
-| [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) | The [protocol](https://modelcontextprotocol.io/specification/2025-06-18) over stdio | |
+| Foundation `JSONDecoder`, `JSONEncoder`, `FileHandle` | The [protocol](https://modelcontextprotocol.io/specification/2025-11-25) over stdio: JSON-RPC 2.0, one message per line (`initialize`, `ping`, `tools/list`, `tools/call`) | |
 
 ## The rules worth knowing before you use it
 
@@ -91,6 +96,14 @@ the better signal.
 secrets are masked on a best-effort basis (flags and `key=value` names such as `--token`,
 `API_KEY=`, well-known credential prefixes, passwords inside URLs), which is never a
 guarantee. A process's environment is never read.
+
+**Battery and disk readings carry no identifiers.** The battery's serial number, which the
+system publishes next to its charge, is never read, and a drive is named by its BSD name
+(`disk0`), never by model or serial number. Cycle count is not offered: the documented
+power-source interface has no key for it.
+
+**Disk counters are per drive and since boot.** Rates and average latency come from two
+readings, as everywhere else; `sample_ms` 0 returns totals only.
 
 **Network counters are per interface, not per process.** The system offers no per-process
 traffic figure through these interfaces.
@@ -167,8 +180,8 @@ You lose the per-tool switches.
 - **Other users' and the system's processes are visible but not readable.** Their CPU,
   memory, threads, descriptors and sockets show `n/a`. Sockets owned by a service that runs
   as root or as another user do not appear in `system_connections`.
-- **No CPU frequency and no temperatures.** `hw.cpufrequency` is empty on Apple silicon and
-  there is no sysctl for the thermal state; this server does not read sensors.
+- **No CPU frequency and no thermal state.** `hw.cpufrequency` is empty on Apple silicon and
+  there is no sysctl for the thermal state. Only the battery's own temperature is reported.
 - **No per-process network traffic and no GPU or energy figures.**
 - **A pid is a moment in time.** Pids are reused, and a process that exits between two
   readings has no rate. Use a pid right after listing it.

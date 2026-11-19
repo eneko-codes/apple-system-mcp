@@ -1,5 +1,4 @@
 import Foundation
-import MCP
 import Synchronization
 
 /// Waits this many milliseconds. A parameter so the tests drive the two-reading tools
@@ -77,7 +76,7 @@ public struct SystemTools: Sendable {
         self.timeout = timeout
     }
 
-    public func handle(_ parameters: CallTool.Parameters) async -> CallTool.Result {
+    public func handle(_ parameters: ToolCall) async -> ToolOutput {
         let started = ContinuousClock.now
         let outcome = await Deadline.run(within: timeout) {
             do {
@@ -88,7 +87,7 @@ public struct SystemTools: Sendable {
         }
         switch outcome {
         case .success(let text)?:
-            return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
+            return ToolOutput(text: text, isError: false)
         case .failure(let error)?:
             return failure(error, tool: parameters.name, since: started)
         case nil:
@@ -100,11 +99,9 @@ public struct SystemTools: Sendable {
 
     private func failure(
         _ error: any Error, tool: String, since started: ContinuousClock.Instant
-    ) -> CallTool.Result {
+    ) -> ToolOutput {
         Diagnostics.toolFailed(tool, error: error, since: started)
-        return .init(
-            content: [.text(text: Self.message(for: error), annotations: nil, _meta: nil)],
-            isError: true)
+        return ToolOutput(text: Self.message(for: error), isError: true)
     }
 
     /// Only our own error types are described. Anything else becomes a generic failure, so
@@ -122,7 +119,7 @@ public struct SystemTools: Sendable {
         }
     }
 
-    private func run(_ parameters: CallTool.Parameters) async throws -> String {
+    private func run(_ parameters: ToolCall) async throws -> String {
         let arguments = Arguments(parameters.arguments)
 
         switch parameters.name {
@@ -133,6 +130,8 @@ public struct SystemTools: Sendable {
         case ToolCatalog.networkName: return try await network(arguments)
         case ToolCatalog.volumesName: return try volumes(arguments)
         case ToolCatalog.connectionsName: return try connections(arguments)
+        case ToolCatalog.batteryName: return try battery()
+        case ToolCatalog.disksName: return try await disks(arguments)
         default:
             throw ToolError.badArgument(
                 name: "name", reason: "'\(parameters.name)' is not a tool of this server")
@@ -400,6 +399,64 @@ public struct SystemTools: Sendable {
         return format.connections(
             rows: Array(rows), matching: matching.count, readableProcesses: readable,
             visibleProcesses: processes.records.count)
+    }
+
+    // MARK: Battery
+
+    private func battery() throws -> String {
+        format.battery(try source.powerStatus())
+    }
+
+    // MARK: Disks
+
+    private func disks(_ arguments: Arguments) async throws -> String {
+        let sample = try arguments.int(
+            "sample_ms", default: ToolCatalog.defaultDiskSampleMilliseconds,
+            in: ToolCatalog.diskSampleRange)
+
+        var latest = try source.diskSnapshot()
+        var rates: [UInt64: Format.DiskRate]?
+        if sample > 0 {
+            try await sleep(sample)
+            let earlier = latest
+            latest = try source.diskSnapshot()
+            let elapsed = latest.takenAtNanoseconds &- earlier.takenAtNanoseconds
+            let before = Dictionary(
+                earlier.devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            var computed: [UInt64: Format.DiskRate] = [:]
+            for device in latest.devices {
+                guard let previous = before[device.id] else { continue }
+                computed[device.id] = Format.DiskRate(
+                    readBytesPerSecond: Metrics.bytesPerSecond(
+                        before: previous.readBytes, after: device.readBytes, elapsedNanoseconds: elapsed),
+                    writtenBytesPerSecond: Metrics.bytesPerSecond(
+                        before: previous.writtenBytes, after: device.writtenBytes,
+                        elapsedNanoseconds: elapsed),
+                    readsPerSecond: Metrics.bytesPerSecond(
+                        before: previous.readOperations, after: device.readOperations,
+                        elapsedNanoseconds: elapsed),
+                    writesPerSecond: Metrics.bytesPerSecond(
+                        before: previous.writtenOperations, after: device.writtenOperations,
+                        elapsedNanoseconds: elapsed),
+                    readLatencyNanoseconds: Self.latency(
+                        previous.readTimeNanoseconds, device.readTimeNanoseconds,
+                        previous.readOperations, device.readOperations),
+                    writeLatencyNanoseconds: Self.latency(
+                        previous.writeTimeNanoseconds, device.writeTimeNanoseconds,
+                        previous.writtenOperations, device.writtenOperations))
+            }
+            rates = computed
+        }
+        return format.disks(devices: latest.devices, rates: rates, sampleMilliseconds: sample)
+    }
+
+    /// `nil` when a counter went backwards, as with every other rate here.
+    private static func latency(_ timeBefore: UInt64, _ timeAfter: UInt64, _ opsBefore: UInt64, _ opsAfter: UInt64)
+        -> Double?
+    {
+        guard timeAfter >= timeBefore, opsAfter >= opsBefore else { return nil }
+        return Metrics.averageLatencyNanoseconds(
+            timeDelta: timeAfter - timeBefore, operationsDelta: opsAfter - opsBefore)
     }
 
     static var binaryPath: String {
