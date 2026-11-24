@@ -13,7 +13,7 @@ struct ProtocolTests {
     private func handler(
         source: FakeSystemSource = FakeSystemSource(), timeout: Duration = SystemTools.defaultTimeout
     ) -> MCPHandler {
-        MCPHandler(tools: SystemTools(source: source, sleep: { _ in }, timeout: timeout))
+        SystemMCPServer.handler(tools: SystemTools(source: source, sleep: { _ in }, timeout: timeout))
     }
 
     private func decode(_ line: String?) throws -> [String: Value] {

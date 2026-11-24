@@ -1,29 +1,39 @@
 import Foundation
+import Synchronization
+
+/// What answers a `tools/call`. Each server's dispatcher conforms; the protocol layer
+/// below knows nothing else about it.
+public protocol ToolHandler: Sendable {
+    func handle(_ call: ToolCall) async -> ToolOutput
+}
 
 /// Turns one line of JSON-RPC 2.0 into at most one line of reply.
 ///
 /// This is the whole of the Model Context Protocol the server needs over stdio: `initialize`,
 /// `ping`, `tools/list` and `tools/call`, one JSON message per line. It takes and returns
-/// text so the tests drive it without a pipe.
+/// text so the tests drive it without a pipe. This file and `Value.swift` are the same in
+/// every server; what differs is passed in.
 public struct MCPHandler: Sendable {
 
     /// Newest first. A client asking for one of these gets it back; any other request is
     /// answered with the newest, and the client decides whether it can speak that.
     static let supportedVersions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 
-    private let tools: SystemTools
     private let name: String
     private let version: String
     private let instructions: String
+    private let catalog: [Tool]
+    private let tools: any ToolHandler
 
     public init(
-        tools: SystemTools, name: String = SystemMCPServer.name,
-        version: String = SystemMCPServer.version, instructions: String = SystemMCPServer.instructions
+        name: String, version: String, instructions: String, catalog: [Tool],
+        tools: any ToolHandler
     ) {
-        self.tools = tools
         self.name = name
         self.version = version
         self.instructions = instructions
+        self.catalog = catalog
+        self.tools = tools
     }
 
     private enum Failure {
@@ -56,21 +66,18 @@ public struct MCPHandler: Sendable {
         case "ping":
             return Self.encode(result: .object([:]), id: id)
         case "tools/list":
-            return Self.encode(
-                result: .object(["tools": .array(ToolCatalog.all().map(\.json))]), id: id)
+            return Self.encode(result: .object(["tools": .array(catalog.map(\.json))]), id: id)
         case "tools/call":
             guard let toolName = parameters?["name"]?.stringValue else {
                 return Self.encode(error: Failure.invalidParameters, id: id)
             }
             let output = await tools.handle(
-                ToolCall(name: toolName, arguments: parameters?["arguments"]?.objectValue))
+                ToolCall(
+                    name: toolName, arguments: parameters?["arguments"]?.objectValue,
+                    progressToken: Self.progressToken(parameters)))
             return Self.encode(
-                result: .object([
-                    "content": .array([
-                        .object(["type": .string("text"), "text": .string(output.text)])
-                    ]),
-                    "isError": .bool(output.isError),
-                ]), id: id)
+                result: .object(["content": output.json, "isError": .bool(output.isError)]),
+                id: id)
         default:
             return Self.encode(error: Failure.methodNotFound, id: id)
         }
@@ -84,6 +91,30 @@ public struct MCPHandler: Sendable {
             "capabilities": .object(["tools": .object(["listChanged": .bool(false)])]),
             "serverInfo": .object(["name": .string(name), "version": .string(version)]),
             "instructions": .string(instructions),
+        ])
+    }
+
+    /// The specification allows a string or an integer and nothing else; any other value is
+    /// treated as no request for progress.
+    private static func progressToken(_ parameters: [String: Value]?) -> Value? {
+        switch parameters?["_meta"]?.objectValue?["progressToken"] {
+        case .string(let token)?: return .string(token)
+        case .int(let token)?: return .int(token)
+        default: return nil
+        }
+    }
+
+    /// A `notifications/progress` line for a call that sent `token`. `progress` must grow
+    /// with each notification, and none may follow the call's answer.
+    public static func progress(
+        token: Value, progress: Double, total: Double? = nil, message: String? = nil
+    ) -> String? {
+        var parameters: [String: Value] = ["progressToken": token, "progress": .double(progress)]
+        if let total { parameters["total"] = .double(total) }
+        if let message { parameters["message"] = .string(message) }
+        return line([
+            "jsonrpc": .string("2.0"), "method": .string("notifications/progress"),
+            "params": .object(parameters),
         ])
     }
 
@@ -126,4 +157,25 @@ public func serve<Lines: AsyncSequence>(
         }
         await group.waitForAll()
     }
+}
+
+/// Serves standard input and output until the client closes the input.
+///
+/// stdout is the JSON-RPC stream and carries nothing else: a stray line there breaks every
+/// response after it. Diagnostics go to stderr.
+public func serveStandardStreams(handler: MCPHandler) async {
+    await serve(
+        lines: FileHandle.standardInput.bytes.lines, handler: handler,
+        write: writeStandardOutput)
+}
+
+/// Replies are written from concurrent tasks, and a pipe keeps a write whole only up to
+/// PIPE_BUF (512 bytes on macOS); a longer reply could interleave with another without it.
+private let standardOutputLock = Mutex(())
+
+/// One line per call, under the lock. `try?`: the throwing overload reports a closed pipe as
+/// an error, where the plain `write(_:)` raises an exception Swift cannot catch.
+@Sendable public func writeStandardOutput(_ line: String) {
+    let data = Data((line + "\n").utf8)
+    standardOutputLock.withLock { _ in try? FileHandle.standardOutput.write(contentsOf: data) }
 }

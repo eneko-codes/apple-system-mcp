@@ -52,7 +52,7 @@ enum Deadline {
 ///
 /// Never touches the machine directly: everything goes through `SystemSource`, which is
 /// what lets the tests drive every branch below against an in-memory double.
-public struct SystemTools: Sendable {
+public struct SystemTools: ToolHandler {
     private let source: any SystemSource
     private let sleep: Sleep
     private let now: @Sendable () -> Date
