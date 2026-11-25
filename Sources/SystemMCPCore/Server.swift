@@ -3,7 +3,7 @@ import Foundation
 public enum SystemMCPServer {
 
     public static let name = "apple-system-mcp"
-    public static let version = "1.1.0"
+    public static let version = "1.1.1"
 
     /// Returned from `initialize`. It carries what per-tool descriptions cannot state
     /// once: that every percentage is a two-reading measurement, and what an ordinary
@@ -52,19 +52,14 @@ public enum SystemMCPServer {
 
     /// The source is a parameter so the whole server can be driven by a double. Nothing in
     /// this function reads the machine by itself.
-    ///
-    /// stdout is the JSON-RPC stream and carries nothing else: a stray line there breaks
-    /// every response after it. Diagnostics go to stderr.
     public static func run(source: any SystemSource = DarwinSystemSource()) async {
-        let handler = MCPHandler(tools: SystemTools(source: source))
         Diagnostics.started(version: version)
-        await serve(
-            lines: FileHandle.standardInput.bytes.lines, handler: handler,
-            write: { reply in
-                // One write per line, so concurrent replies cannot interleave halves of
-                // lines. `try?`: the throwing overload reports a closed pipe as an error,
-                // where the plain `write(_:)` raises an exception Swift cannot catch.
-                try? FileHandle.standardOutput.write(contentsOf: Data((reply + "\n").utf8))
-            })
+        await serveStandardStreams(handler: handler(tools: SystemTools(source: source)))
+    }
+
+    public static func handler(tools: SystemTools) -> MCPHandler {
+        MCPHandler(
+            name: name, version: version, instructions: instructions,
+            catalog: ToolCatalog.all(), tools: tools)
     }
 }

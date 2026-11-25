@@ -20,6 +20,8 @@ Read-only server — there is nothing to modify or delete, and nothing is config
 
 A local MCP server (Swift 6, stdio transport) that reads the state of a Mac: processes, CPU, memory, network interfaces, mounted volumes, open sockets, the battery and storage activity, through libproc, sysctl, Mach, `getifaddrs`, `getfsstat` and IOKit. No Apple events, no helper programs, no shell, no network, no write of any kind, no user configuration, **no third-party dependency**: `Package.swift` lists none, and the MCP protocol (JSON-RPC over stdio) is `MCPServer.swift` over Foundation. Adding a package needs the owner's say-so.
 
+**`MCPServer.swift`, `Value.swift` and `Tests/…/MCPProtocolTests.swift` are copied unchanged into every one of the owner's MCP servers** (the test file differs only in its `@testable import`). A change to one is made to every copy in the same piece of work; never let a copy drift.
+
 ## System interfaces
 
 Apple publishes no online reference for libproc or the Mach host calls; their contract is the public SDK header (`$(xcrun --show-sdk-path)/usr/include`). The BSD calls have manual pages, archived [here](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/). The full index, with the symbols used and where each is declared, is in `README.md`.
