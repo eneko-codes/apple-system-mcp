@@ -172,7 +172,7 @@ public struct SystemTools: ToolHandler {
                 perCore: perCore
                     ? zip(before, after).map { Metrics.cpuBreakdown(from: $0, to: $1) } : nil,
                 sampleMilliseconds: sample, now: now()))
-        return Format.withNotices(arguments.notices, text)
+        return ToolStandard.withNotices(arguments.notices, text)
     }
 
     // MARK: Processes
@@ -224,7 +224,7 @@ public struct SystemTools: ToolHandler {
         let matching = rows.count
         rows.sort { Self.precedes($0, $1, by: sortKey) }
 
-        return Format.page(
+        return ToolStandard.page(
             of: rows, limit: page.limit, offset: page.offset, things: "processes",
             notices: arguments.notices
         ) {
@@ -308,7 +308,7 @@ public struct SystemTools: ToolHandler {
             },
             sampleMilliseconds: sample, arguments: maskedArguments,
             argumentsRequested: includeArguments, exitedDuringSample: second == nil, now: now())
-        return Format.fitting(maxCharacters) {
+        return ToolStandard.fitting(maxCharacters) {
             format.process(
                 report, characterOffset: characterOffset, maxCharacters: $0,
                 notices: arguments.notices)
@@ -355,7 +355,7 @@ public struct SystemTools: ToolHandler {
                     && !(interface.addresses.isEmpty && interface.receivedBytes == 0
                         && interface.sentBytes == 0))
         }.sorted { Self.namePrecedes($0.name, $1.name) }
-        return Format.page(
+        return ToolStandard.page(
             of: shown, limit: page.limit, offset: page.offset, things: "interfaces",
             notices: arguments.notices
         ) {
@@ -379,7 +379,7 @@ public struct SystemTools: ToolHandler {
         let all = try source.volumes()
         let shown = (includeHidden ? all : all.filter { !Self.isSystemVolume($0) })
             .sorted { Self.namePrecedes($0.mountPoint, $1.mountPoint) }
-        return Format.page(
+        return ToolStandard.page(
             of: shown, limit: page.limit, offset: page.offset, things: "volumes",
             notices: arguments.notices
         ) {
@@ -436,7 +436,7 @@ public struct SystemTools: ToolHandler {
             Format.SocketRow(
                 socket: $0, processName: processes.records[$0.pid]?.identity.name ?? "(exited)")
         }
-        return Format.page(
+        return ToolStandard.page(
             of: matching, limit: page.limit, offset: page.offset, things: "sockets",
             notices: arguments.notices
         ) {
@@ -497,7 +497,7 @@ public struct SystemTools: ToolHandler {
         let devices = latest.devices.sorted {
             $0.name == $1.name ? $0.id < $1.id : Self.namePrecedes($0.name, $1.name)
         }
-        return Format.page(
+        return ToolStandard.page(
             of: devices, limit: page.limit, offset: page.offset, things: "storage drivers",
             notices: arguments.notices
         ) {

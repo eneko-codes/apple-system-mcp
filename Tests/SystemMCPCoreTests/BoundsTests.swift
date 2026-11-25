@@ -319,14 +319,14 @@ struct BoundsTests {
     @Test("fitting halves the size only while the text is too long, and stops at one")
     func fitting() {
         var asked: [Int] = []
-        let fits = Format.fitting(8) { size in
+        let fits = ToolStandard.fitting(8) { size in
             asked.append(size)
             return "short"
         }
         #expect(fits == "short" && asked == [8])
 
         asked = []
-        let shrunk = Format.fitting(8) { size in
+        let shrunk = ToolStandard.fitting(8) { size in
             asked.append(size)
             return String(repeating: "x", count: size * ToolStandard.longestResult / 2)
         }
@@ -334,7 +334,7 @@ struct BoundsTests {
         #expect(shrunk.utf16.count == ToolStandard.longestResult)
 
         asked = []
-        _ = Format.fitting(4) { size in
+        _ = ToolStandard.fitting(4) { size in
             asked.append(size)
             return String(repeating: "x", count: ToolStandard.longestResult + 1)
         }
@@ -366,7 +366,7 @@ struct BoundsTests {
         let size = ToolCatalog.defaultMaxCharacters
         #expect(whole.count > size)
         let result = await arguments()
-        #expect(result.text.hasPrefix("Characters 1–\(size) of \(whole.count). Pass character_offset=\(size) for the rest.\n\nProcess 10"))
+        #expect(result.text.hasPrefix("Arguments: characters 1–\(size) of \(whole.count). Pass character_offset=\(size) for the rest.\n\nProcess 10"))
         #expect(try argumentWindow(result.text) == String(whole.prefix(size)))
     }
 
@@ -381,9 +381,9 @@ struct BoundsTests {
             let last = offset + window.count
             let next = last < whole.count ? "Pass character_offset=\(last) for the rest." : "That is all."
             if offset == 0 && last == whole.count {
-                #expect(!result.text.contains("Characters"))
+                #expect(!result.text.contains("Arguments: characters"))
             } else {
-                #expect(result.text.hasPrefix("Characters \(offset + 1)–\(last) of \(whole.count). \(next)\n\n"))
+                #expect(result.text.hasPrefix("Arguments: characters \(offset + 1)–\(last) of \(whole.count). \(next)\n\n"))
             }
             #expect(window.count == min(7000, whole.count - offset))
             joined += window
@@ -395,7 +395,7 @@ struct BoundsTests {
     @Test("A listing that fits one window carries no notice")
     func shortListingHasNoNotice() async throws {
         let result = await arguments(of: ["/Applications/alpha", "--verbose"])
-        #expect(!result.text.contains("Characters"))
+        #expect(!result.text.contains("Arguments: characters"))
         #expect(try argumentWindow(result.text) == "  [0] /Applications/alpha\n  [1] --verbose")
     }
 
@@ -413,11 +413,11 @@ struct BoundsTests {
         let over = await arguments(["max_characters": .int(maximum + 1)])
         #expect(
             over.text.hasPrefix(
-                "max_characters=\(maximum + 1) is outside 1–\(maximum); \(maximum) was used.\nCharacters 1–\(maximum) of "))
+                "max_characters=\(maximum + 1) is outside 1–\(maximum); \(maximum) was used.\nArguments: characters 1–\(maximum) of "))
         #expect(try argumentWindow(over.text).count == maximum)
 
         let under = await arguments(["max_characters": .int(0)])
-        #expect(under.text.hasPrefix("max_characters=0 is outside 1–\(maximum); 1 was used.\nCharacters 1–1 of "))
+        #expect(under.text.hasPrefix("max_characters=0 is outside 1–\(maximum); 1 was used.\nArguments: characters 1–1 of "))
         #expect(try argumentWindow(under.text) == " ")
     }
 
@@ -427,14 +427,14 @@ struct BoundsTests {
         let past = await arguments(["character_offset": .int(whole.count + 50)])
         #expect(
             past.text.hasPrefix(
-                "Characters 0 of \(whole.count): character_offset=\(whole.count) is past the end. That is all.\n\n"))
+                "Arguments: characters 0 of \(whole.count): character_offset=\(whole.count + 50) is past the end. That is all.\n\n"))
         #expect(try argumentWindow(past.text).isEmpty)
 
         let negative = await arguments(["character_offset": .int(-3)])
         let range = ToolCatalog.offsetRange
         #expect(
             negative.text.hasPrefix(
-                "character_offset=-3 is outside \(range.lowerBound)–\(range.upperBound); 0 was used.\nCharacters 1–"))
+                "character_offset=-3 is outside \(range.lowerBound)–\(range.upperBound); 0 was used.\nArguments: characters 1–"))
     }
 
     @Test("A window of characters that take several UTF-16 units each still fits a result, and still chains")
@@ -452,7 +452,7 @@ struct BoundsTests {
             let window = try argumentWindow(result.text)
             #expect(!window.isEmpty && window.count < maximum)
             let last = offset + window.count
-            #expect(result.text.contains("Characters \(offset + 1)–\(last) of \(whole.count). "))
+            #expect(result.text.contains("Arguments: characters \(offset + 1)–\(last) of \(whole.count). "))
             joined += window
             offset = last
         }
@@ -483,7 +483,7 @@ struct BoundsTests {
             result.text.hasPrefix(
                 """
                 Showing 1–2 of 5 children. Pass offset=2 for the next page.
-                Characters 1–\(size) of \(whole). Pass character_offset=\(size) for the rest.
+                Arguments: characters 1–\(size) of \(whole). Pass character_offset=\(size) for the rest.
 
                 Process 10 — alpha
                 """))
@@ -585,9 +585,9 @@ struct BoundsTests {
         let result = await call(name, source: FakeSystemSource())
         #expect(result.isError)
         #expect(result.text.contains("is not a tool of this server"))
-        #expect(result.text.contains(String(repeating: "n", count: ToolError.echoWidth) + "…"))
-        #expect(result.text.count < ToolError.echoWidth + 60)
-        #expect(ToolError.echo("system_reboot") == "system_reboot")
+        #expect(result.text.contains(String(repeating: "n", count: ToolStandard.echoWidth) + "…"))
+        #expect(result.text.count < ToolStandard.echoWidth + 60)
+        #expect(ToolStandard.echo("system_reboot") == "system_reboot")
     }
 
     @Test("Every error this server words is far inside the longest error")

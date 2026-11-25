@@ -42,16 +42,62 @@ public enum ToolStandard {
     /// The part of `text` that starts `characterOffset` characters in and holds at most
     /// `maxCharacters`, with the notice that says where it sits in the whole. The notice is
     /// `nil` when the window is the whole text. Characters are Swift's, so a window never
-    /// splits one, and the next window starts exactly where this one ended.
+    /// splits one, and the next window starts exactly where this one ended. `label` names
+    /// the text in the notice when the result holds more than that text.
     public static func window(
-        of text: String, characterOffset: Int, maxCharacters: Int
+        of text: String, characterOffset: Int, maxCharacters: Int, label: String? = nil
     ) -> (text: String, notice: String?) {
         let total = text.count
-        let offset = Swift.min(Swift.max(characterOffset, 0), total)
-        let start = text.index(text.startIndex, offsetBy: offset)
+        let asked = Swift.max(characterOffset, 0)
+        let start = text.index(text.startIndex, offsetBy: Swift.min(asked, total))
         let end = text.index(start, offsetBy: Swift.max(maxCharacters, 0), limitedBy: text.endIndex) ?? text.endIndex
         let part = String(text[start..<end])
-        return (part, Notice.window(offset: offset, count: part.count, total: total))
+        return (part, Notice.window(offset: asked, count: part.count, total: total, label: label))
+    }
+
+    /// What a result left out goes first: one sentence a line, a blank line, then the data.
+    public static func withNotices(_ notices: [String], _ text: String) -> String {
+        notices.isEmpty ? text : notices.joined(separator: "\n") + "\n\n" + text
+    }
+
+    /// Renders `size` rows or characters and, while the text is longer than a result may
+    /// be, halves `size` and renders again.
+    ///
+    /// A tool's maximum is chosen so that ordinary rows fit without this. It is here for
+    /// what no maximum can foresee (one row far wider than the rest, a text whose characters
+    /// take several UTF-16 units each), so that such a result holds less and says where to
+    /// resume, and never reaches the guard to be cut. `render` builds its notice from what
+    /// it rendered, so the notice stays true.
+    public static func fitting(_ size: Int, render: (Int) -> String) -> String {
+        var size = size
+        var text = render(size)
+        while text.utf16.count > longestResult, size > 1 {
+            size /= 2
+            text = render(size)
+        }
+        return text
+    }
+
+    /// One page of `rows`: the notices, the sentence that places the page in the whole when
+    /// it is not the whole, then what `render` makes of the rows on the page. `rows` is
+    /// every matching row, already in the order the tool states.
+    public static func page<Row>(
+        of rows: [Row], limit: Int, offset: Int, things: String, notices: [String],
+        render: ([Row]) -> String
+    ) -> String {
+        fitting(limit) { size in
+            let page = Array(rows.dropFirst(offset).prefix(size))
+            let position = Notice.page(offset: offset, count: page.count, total: rows.count, things: things)
+            return withNotices(notices + [position].compactMap { $0 }, render(page))
+        }
+    }
+
+    /// How much of a caller's own text an error may repeat.
+    public static let echoWidth = 80
+
+    /// `text` as an error may repeat it: at most `echoWidth` characters.
+    public static func echo(_ text: String) -> String {
+        text.count > echoWidth ? String(text.prefix(echoWidth)) + "…" : text
     }
 
     /// The names of the texts a client would cut: the instructions and each tool
@@ -86,14 +132,22 @@ public enum Notice {
     }
 
     /// For a window of one long text. Returns `nil` when the window is the whole text.
-    public static func window(offset: Int, count: Int, total: Int) -> String? {
+    /// `label` names the text when the result holds more than that text.
+    public static func window(offset: Int, count: Int, total: Int, label: String? = nil) -> String? {
         let last = offset + count
         guard offset > 0 || last < total else { return nil }
+        let characters = label.map { "\($0): characters" } ?? "Characters"
         guard count > 0 else {
-            return "Characters 0 of \(total): character_offset=\(offset) is past the end. That is all."
+            return "\(characters) 0 of \(total): character_offset=\(offset) is past the end. That is all."
         }
-        let shown = "Characters \(offset + 1)–\(last) of \(total)."
+        let shown = "\(characters) \(offset + 1)–\(last) of \(total)."
         return last < total ? "\(shown) Pass character_offset=\(last) for the rest." : "\(shown) That is all."
+    }
+
+    /// For rows a tool holds back unless asked, such as hidden or inactive ones.
+    /// `argument` is what to pass, written as it would be passed: `include_hidden=true`.
+    public static func notShown(count: Int, things: String, pass argument: String) -> String {
+        "\(count) \(things) are not shown. Pass \(argument) to include them."
     }
 
     /// For a long field shortened inside each row. `tool` reads one item in full.

@@ -97,43 +97,6 @@ public struct Format: Sendable {
 
     // MARK: Notices and bounds
 
-    /// What a result left out goes first: one sentence a line, a blank line, then the data.
-    static func withNotices(_ notices: [String], _ text: String) -> String {
-        notices.isEmpty ? text : notices.joined(separator: "\n") + "\n\n" + text
-    }
-
-    /// Renders `size` rows or characters and, while the text is longer than a result may
-    /// be, halves `size` and renders again.
-    ///
-    /// Each maximum in `ToolCatalog` is chosen so that ordinary rows fit without this. It
-    /// is here for what no maximum can foresee (an interface with hundreds of addresses, a
-    /// text whose characters take several UTF-16 units each), so that such a result holds
-    /// less and says where to resume instead of reaching the server's guard and being cut.
-    /// `render` builds its notice from what it rendered, so the notice stays true.
-    static func fitting(_ size: Int, render: (Int) -> String) -> String {
-        var size = size
-        var text = render(size)
-        while text.utf16.count > ToolStandard.longestResult, size > 1 {
-            size /= 2
-            text = render(size)
-        }
-        return text
-    }
-
-    /// One page of `rows`: the notices, the sentence that places the page in the whole when
-    /// it is not the whole, then what `render` makes of the rows on the page.
-    static func page<Row>(
-        of rows: [Row], limit: Int, offset: Int, things: String, notices: [String],
-        render: ([Row]) -> String
-    ) -> String {
-        fitting(limit) { size in
-            let page = Array(rows.dropFirst(offset).prefix(size))
-            let position = Notice.page(
-                offset: offset, count: page.count, total: rows.count, things: things)
-            return withNotices(notices + [position].compactMap { $0 }, render(page))
-        }
-    }
-
     /// What an empty page says: nothing matched, or the offset skipped everything.
     static func nothing(_ none: String, matching: Int) -> String {
         "\n\n  " + (matching == 0 ? none : "(nothing at this offset)")
@@ -395,7 +358,7 @@ public struct Format: Sendable {
             if let arguments = report.arguments {
                 let window = ToolStandard.window(
                     of: Self.argumentListing(arguments), characterOffset: characterOffset,
-                    maxCharacters: maxCharacters)
+                    maxCharacters: maxCharacters, label: "Arguments")
                 if let position = window.notice { notices.append(position) }
                 text += "\n\nArguments (best-effort masking of values that look like secrets; the environment is never read):\n"
                 text += window.text
@@ -403,7 +366,7 @@ public struct Format: Sendable {
                 text += "\n\nArguments: not readable for this process."
             }
         }
-        return Self.withNotices(notices, text)
+        return ToolStandard.withNotices(notices, text)
     }
 
     // MARK: Network
