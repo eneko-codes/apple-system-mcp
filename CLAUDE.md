@@ -71,6 +71,8 @@ swift test
 
 `SystemSource` is the only door to the machine. `DarwinSystemSource` implements it over the C interfaces; tests implement it with `FakeSystemSource`. Tools take two readings through the source and compute rates in `Metrics`, which is pure.
 
+**How a tool keeps to the tool standard here.** Sizes are constants in `ToolCatalog`, and the schemas, the descriptions and the instructions quote them by interpolation, never as literals. `Arguments.int` moves a quantity (`limit`, `offset`, `sample_ms`, a window) into its range and collects the sentence that says so in `notices`; `Arguments.optionalIdentifier` refuses a pid or a port outside its range, because the nearest one would name something else. A listing sorts its rows into an order it states, then goes through `Format.page`, which puts the notices and the page's position (`Notice.page`) before the data. `system_process` windows its argument listing with `ToolStandard.window`. Both render through `Format.fitting`, which halves a page or a window whose text would still be longer than a result may be, so a tool never leans on the guard. `BoundsTests` holds every bound, notice and length to this: a new listing takes `limit` and `offset` through `Arguments.page` and gets an entry in its `listings`.
+
 ## Release checklist
 
 - **Bump the version before packing.** The installer keys on the manifest `version` alone; an unchanged version under a changed build makes it offer only "Uninstall", which removes the extension.

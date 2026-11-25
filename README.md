@@ -28,13 +28,13 @@ Activity Monitor app: it is Apple's artwork, used only to show what this server 
 |---|---|---|
 | `system_status` | read | Reports that the server runs and how many processes it can see and read. |
 | `system_overview` | read | macOS version and uptime, chip and core layout, CPU use over a short sample, load average, memory, memory pressure and swap. |
-| `system_processes` | read | Lists processes with CPU %, memory, threads, owner and name, sorted by cpu, memory, name or pid, filtered by name, owner or parent. |
-| `system_process` | read | Everything readable about one pid: state, path, owner, parent, start time, CPU rate, memory, threads, disk, descriptor count, working directory, children. Command-line arguments only on request. |
-| `system_network` | read | Interfaces with addresses, 64-bit cumulative counters and the current rate in each direction. |
-| `system_volumes` | read | Mounted volumes with file system, device, total size and the space an ordinary process may use. |
-| `system_connections` | read | Open TCP and UDP sockets with addresses, TCP state and the owning process. |
+| `system_processes` | read | Lists processes a page at a time with CPU %, memory, threads, owner and name, sorted by cpu, memory, name or pid, filtered by name, owner or parent. |
+| `system_process` | read | Everything readable about one pid: state, path, owner, parent, start time, CPU rate, memory, threads, disk, descriptor count, working directory and a page of its children. Command-line arguments only on request, a window at a time when they are long. |
+| `system_network` | read | Interfaces, a page at a time, with addresses, 64-bit cumulative counters and the current rate in each direction. |
+| `system_volumes` | read | Mounted volumes, a page at a time, with file system, device, total size and the space an ordinary process may use. |
+| `system_connections` | read | Open TCP and UDP sockets, a page at a time, with addresses, TCP state and the owning process. |
 | `system_battery` | read | What the Mac runs on (mains, battery, UPS) and each battery's charge, charging state, time to empty or full, health, temperature and voltage. A desktop answers that it has none. |
-| `system_disks` | read | Read and write activity of each storage driver: totals since boot, and bytes, operations per second and average latency over a short sample. |
+| `system_disks` | read | Read and write activity of each storage driver, a page at a time: totals since boot, and bytes, operations per second and average latency over a short sample. |
 
 ## Frameworks and APIs
 
@@ -76,9 +76,21 @@ are affected. Running the server as root would lift that; it is not a mode this 
 offers. In a measurement on one machine, about three quarters of the processes were
 readable.
 
-**Every percentage and rate is two readings.** CPU use, a process's CPU % and network rates
-are computed between two readings `sample_ms` apart (default 500 ms, up to 5000). The call
-takes at least that long. CPU % is a percentage of **one core**: 100 is one core busy, and a
+**Every result is bounded, and says what it left out.** Processes, sockets, interfaces,
+volumes, storage drivers and a process's children come one page at a time, in an order the
+result states; a long command line comes one window at a time. When a result does not hold
+everything, its first lines say how much there is and the exact arguments that return the
+rest: `limit` and `offset` for rows, `character_offset` and `max_characters` for a command
+line. A number outside its range (`limit`, `offset`, `sample_ms`, a window) is moved to the
+nearest allowed value and the first lines say which one was used. A pid or a port outside
+its range is refused instead, because the nearest one would be another process or port.
+The sizes are constants in `ToolCatalog.swift`, which the schemas and descriptions quote.
+No result is longer than `ToolStandard.longestResult`: each tool keeps to that itself, and
+the protocol layer cuts, with a notice, any result that did not.
+
+**Every percentage and rate is two readings.** CPU use, a process's CPU % and network and
+disk rates are computed between two readings `sample_ms` apart (by default 500 ms for CPU
+and 1000 ms for network and disk rates, up to 5000). The call takes at least that long. CPU % is a percentage of **one core**: 100 is one core busy, and a
 process on four cores can show 400.
 
 **CPU time is not in nanoseconds.** libproc reports it in Mach ticks, and on Apple silicon
@@ -189,6 +201,9 @@ You lose the per-tool switches.
 - **A pid is a moment in time.** Pids are reused, and a process that exits between two
   readings has no rate. Use a pid right after listing it.
 - **Rates are averages over the sample.** A burst shorter than `sample_ms` is smoothed.
+- **Each page is a new reading.** A call reads the machine again, so a row can move between
+  two pages, above all when processes are ordered by CPU. Order by pid or name to see each
+  process exactly once.
 
 ## Development
 

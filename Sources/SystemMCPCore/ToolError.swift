@@ -3,9 +3,19 @@ import Foundation
 public enum ToolError: Error, Equatable {
     case missingArgument(String)
     case badArgument(name: String, reason: String)
+    case unknownTool(String)
     case processNotFound(pid: Int32)
     case systemFailure(function: String, code: Int32)
     case timedOut(seconds: Int)
+
+    /// How much of a caller's own text an error repeats. An error is read by the model,
+    /// and a long argument echoed whole would crowd out what was wrong with it.
+    static let echoWidth = 80
+
+    /// `text` as an error may repeat it: at most `echoWidth` characters.
+    static func echo(_ text: String) -> String {
+        text.count > echoWidth ? String(text.prefix(echoWidth)) + "…" : text
+    }
 
     public var message: String {
         switch self {
@@ -24,6 +34,9 @@ public enum ToolError: Error, Equatable {
 
         case .badArgument(let name, let reason):
             return "Argument '\(name)' is not valid: \(reason)"
+
+        case .unknownTool(let name):
+            return "'\(Self.echo(name))' is not a tool of this server."
 
         case .processNotFound(let pid):
             return """

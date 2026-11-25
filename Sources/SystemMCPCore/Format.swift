@@ -95,6 +95,50 @@ public struct Format: Sendable {
         "\(count) \(noun)\(count == 1 ? "" : "s")"
     }
 
+    // MARK: Notices and bounds
+
+    /// What a result left out goes first: one sentence a line, a blank line, then the data.
+    static func withNotices(_ notices: [String], _ text: String) -> String {
+        notices.isEmpty ? text : notices.joined(separator: "\n") + "\n\n" + text
+    }
+
+    /// Renders `size` rows or characters and, while the text is longer than a result may
+    /// be, halves `size` and renders again.
+    ///
+    /// Each maximum in `ToolCatalog` is chosen so that ordinary rows fit without this. It
+    /// is here for what no maximum can foresee (an interface with hundreds of addresses, a
+    /// text whose characters take several UTF-16 units each), so that such a result holds
+    /// less and says where to resume instead of reaching the server's guard and being cut.
+    /// `render` builds its notice from what it rendered, so the notice stays true.
+    static func fitting(_ size: Int, render: (Int) -> String) -> String {
+        var size = size
+        var text = render(size)
+        while text.utf16.count > ToolStandard.longestResult, size > 1 {
+            size /= 2
+            text = render(size)
+        }
+        return text
+    }
+
+    /// One page of `rows`: the notices, the sentence that places the page in the whole when
+    /// it is not the whole, then what `render` makes of the rows on the page.
+    static func page<Row>(
+        of rows: [Row], limit: Int, offset: Int, things: String, notices: [String],
+        render: ([Row]) -> String
+    ) -> String {
+        fitting(limit) { size in
+            let page = Array(rows.dropFirst(offset).prefix(size))
+            let position = Notice.page(
+                offset: offset, count: page.count, total: rows.count, things: things)
+            return withNotices(notices + [position].compactMap { $0 }, render(page))
+        }
+    }
+
+    /// What an empty page says: nothing matched, or the offset skipped everything.
+    static func nothing(_ none: String, matching: Int) -> String {
+        "\n\n  " + (matching == 0 ? none : "(nothing at this offset)")
+    }
+
     // MARK: Overview
 
     public struct Overview: Sendable {
@@ -203,6 +247,17 @@ public struct Format: Sendable {
         }
     }
 
+    /// The order of a listing in words, because a page means nothing without it.
+    static func processOrder(_ sortKey: String) -> String {
+        switch sortKey {
+        case "memory": return "memory (largest first, unreadable last), then pid"
+        case "name": return "name, then pid"
+        case "pid": return "pid"
+        default: return "CPU % (highest first, unreadable last), then pid"
+        }
+    }
+
+    /// `rows` is the page to show; `matching` counts every row the filters let through.
     public func processList(
         rows: [ProcessRow], totalVisible: Int, totalReadable: Int, matching: Int, sortedBy: String,
         sampleMilliseconds: Int
@@ -213,13 +268,13 @@ public struct Format: Sendable {
             text += " The other \(hidden) belong to other users or to the system, and macOS only"
             text += " exposes their counters to root; they show n/a."
         }
-        text += "\nSorted by \(sortedBy), sampled over \(sampleMilliseconds) ms."
+        text += "\n\(matching) matching, ordered by \(Self.processOrder(sortedBy)), sampled over \(sampleMilliseconds) ms."
         text += " CPU % is of one core: 100 is one core fully busy, and a process on four cores can reach 400."
 
         guard !rows.isEmpty else {
-            return text + "\n\n  (no process matches those filters)"
+            return text + Self.nothing("(no process matches those filters)", matching: matching)
         }
-        text += "\nShowing \(rows.count) of \(matching) matching.\n\n"
+        text += "\n\n"
         text += "  " + Self.padLeft("PID", to: 7) + Self.padLeft("CPU %", to: 8)
             + Self.padLeft("MEMORY", to: 10) + Self.padLeft("THREADS", to: 9) + "  "
             + Self.column("USER", to: 12) + "NAME\n"
@@ -238,7 +293,9 @@ public struct Format: Sendable {
         public var detail: ProcessDetail
         public var userName: String
         public var parentName: String?
+        /// The page of children to show; `detail.childPIDs` holds all of them.
         public var children: [(pid: Int32, name: String)]
+        public var childOffset: Int
         public var cpuPercent: Double?
         public var sampleMilliseconds: Int
         public var arguments: [String]?
@@ -248,13 +305,15 @@ public struct Format: Sendable {
 
         public init(
             detail: ProcessDetail, userName: String, parentName: String?,
-            children: [(pid: Int32, name: String)], cpuPercent: Double?, sampleMilliseconds: Int,
+            children: [(pid: Int32, name: String)], childOffset: Int, cpuPercent: Double?,
+            sampleMilliseconds: Int,
             arguments: [String]?, argumentsRequested: Bool, exitedDuringSample: Bool, now: Date
         ) {
             self.detail = detail
             self.userName = userName
             self.parentName = parentName
             self.children = children
+            self.childOffset = childOffset
             self.cpuPercent = cpuPercent
             self.sampleMilliseconds = sampleMilliseconds
             self.arguments = arguments
@@ -264,7 +323,25 @@ public struct Format: Sendable {
         }
     }
 
-    public func process(_ report: ProcessReport) -> String {
+    /// The command line as it is listed and windowed: one argument a line, numbered.
+    static func argumentListing(_ arguments: [String]) -> String {
+        arguments.enumerated().map { index, argument in
+            "  [\(index)] \(oneLine(argument))"
+        }.joined(separator: "\n")
+    }
+
+    /// `characterOffset` and `maxCharacters` window the argument listing, the one part of
+    /// the report with no natural bound: a command line can run to a megabyte.
+    public func process(
+        _ report: ProcessReport, characterOffset: Int, maxCharacters: Int, notices: [String]
+    ) -> String {
+        var notices = notices
+        if let position = Notice.page(
+            offset: report.childOffset, count: report.children.count,
+            total: report.detail.childPIDs.count, things: "children")
+        {
+            notices.append(position)
+        }
         let identity = report.detail.record.identity
         let usage = report.detail.record.usage
 
@@ -304,11 +381,9 @@ public struct Format: Sendable {
         }
         rows.append(("directory", report.detail.workingDirectory.map(Self.oneLine)))
         if !report.children.isEmpty {
-            let shown = report.children.map { "\($0.pid) (\(Self.oneLine($0.name)))" }
-            let extra = report.detail.childPIDs.count - report.children.count
             rows.append((
                 "children",
-                shown.joined(separator: ", ") + (extra > 0 ? ", and \(extra) more" : "")
+                report.children.map { "\($0.pid) (\(Self.oneLine($0.name)))" }.joined(separator: ", ")
             ))
         }
 
@@ -318,29 +393,32 @@ public struct Format: Sendable {
         }
         if report.argumentsRequested {
             if let arguments = report.arguments {
+                let window = ToolStandard.window(
+                    of: Self.argumentListing(arguments), characterOffset: characterOffset,
+                    maxCharacters: maxCharacters)
+                if let position = window.notice { notices.append(position) }
                 text += "\n\nArguments (best-effort masking of values that look like secrets; the environment is never read):\n"
-                text += arguments.enumerated().map { index, argument in
-                    "  [\(index)] \(Self.oneLine(argument))"
-                }.joined(separator: "\n")
+                text += window.text
             } else {
                 text += "\n\nArguments: not readable for this process."
             }
         }
-        return text
+        return Self.withNotices(notices, text)
     }
 
     // MARK: Network
 
+    /// `interfaces` is the page to show; `matching` counts every interface not hidden.
     public func network(
-        interfaces: [NetworkInterface], rates: [String: (received: Double?, sent: Double?)]?,
-        sampleMilliseconds: Int, hidden: Int
+        interfaces: [NetworkInterface], matching: Int,
+        rates: [String: (received: Double?, sent: Double?)]?, sampleMilliseconds: Int, hidden: Int
     ) -> String {
-        var text = "Network interfaces: \(interfaces.count) shown"
-        if hidden > 0 { text += ", \(hidden) down or idle hidden" }
+        var text = "Network interfaces: \(matching), ordered by name"
+        if hidden > 0 { text += "; \(hidden) down or idle hidden (pass include_inactive to list them)" }
         text += ". Totals are cumulative since boot"
         text += rates == nil ? "." : "; rates are over \(sampleMilliseconds) ms."
 
-        guard !interfaces.isEmpty else { return text + "\n\n  (none)" }
+        guard !interfaces.isEmpty else { return text + Self.nothing("(none)", matching: matching) }
         let rows = interfaces.map { interface -> String in
             var line = "  \(interface.name) — \(interface.isUp ? "up" : "down")"
             if interface.isLoopback { line += ", loopback" }
@@ -359,12 +437,13 @@ public struct Format: Sendable {
 
     // MARK: Volumes
 
-    public func volumes(_ volumes: [Volume], hidden: Int) -> String {
-        var text = "Volumes: \(volumes.count) shown"
-        if hidden > 0 { text += ", \(hidden) system volumes hidden (pass include_hidden to list them)" }
+    /// `volumes` is the page to show; `matching` counts every volume not hidden.
+    public func volumes(_ volumes: [Volume], matching: Int, hidden: Int) -> String {
+        var text = "Volumes: \(matching), ordered by mount point"
+        if hidden > 0 { text += "; \(hidden) system volumes hidden (pass include_hidden to list them)" }
         text += ". Available is what an ordinary process may write."
         text += " It can differ from the space Finder reports, which also counts purgeable files."
-        guard !volumes.isEmpty else { return text + "\n\n  (none)" }
+        guard !volumes.isEmpty else { return text + Self.nothing("(none)", matching: matching) }
 
         return text + "\n\n" + volumes.map { volume in
             var line = "  \(Self.oneLine(volume.mountPoint))\n      \(volume.fileSystem) on \(Self.oneLine(volume.device))"
@@ -390,13 +469,15 @@ public struct Format: Sendable {
         }
     }
 
+    /// `rows` is the page to show; `matching` counts every socket the filters let through.
     public func connections(rows: [SocketRow], matching: Int, readableProcesses: Int, visibleProcesses: Int) -> String {
-        var text = "Sockets: \(matching) matching, from \(readableProcesses) of \(visibleProcesses) processes."
+        var text = "Sockets: \(matching) matching, from \(readableProcesses) of \(visibleProcesses) processes,"
+        text += " ordered by local port, then pid."
         if readableProcesses < visibleProcesses {
             text += " Sockets of other users' processes and of the system are not visible without root."
         }
-        guard !rows.isEmpty else { return text + "\n\n  (none)" }
-        text += "\nShowing \(rows.count).\n\n"
+        guard !rows.isEmpty else { return text + Self.nothing("(none)", matching: matching) }
+        text += "\n\n"
         text += "  " + Self.column("PROTO", to: 6) + Self.column("LOCAL", to: 30) + Self.column("REMOTE", to: 30)
             + Self.column("STATE", to: 13) + Self.padLeft("PID", to: 7) + "  PROCESS\n"
         text += rows.map { row in
@@ -492,11 +573,14 @@ public struct Format: Sendable {
         nanoseconds.map { String(format: "%.1f ms", $0 / 1_000_000) } ?? "n/a"
     }
 
-    public func disks(devices: [DiskDevice], rates: [UInt64: DiskRate]?, sampleMilliseconds: Int) -> String {
-        var text = "Storage drivers: \(devices.count). Totals are since each driver started, which is boot"
-        text += " for the internal drive"
+    /// `devices` is the page to show; `matching` counts every storage driver.
+    public func disks(
+        devices: [DiskDevice], matching: Int, rates: [UInt64: DiskRate]?, sampleMilliseconds: Int
+    ) -> String {
+        var text = "Storage drivers: \(matching), ordered by name. Totals are since each driver started,"
+        text += " which is boot for the internal drive"
         text += rates == nil ? "." : "; rates are over \(sampleMilliseconds) ms."
-        guard !devices.isEmpty else { return text + "\n\n  (none)" }
+        guard !devices.isEmpty else { return text + Self.nothing("(none)", matching: matching) }
 
         return text + "\n\n" + devices.map { device in
             let total = "\(Self.bytes(device.readBytes)) read (\(device.readOperations) operations)"
