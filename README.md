@@ -145,9 +145,12 @@ ad-hoc, which works but changes the code identity on every rebuild. To keep a st
 identity:
 
 ```bash
-security find-identity -v -p codesigning
-MCPB_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/pack.sh
+security find-identity -v -p codesigning   # copy the 40-character hash of an Apple Development or Developer ID Application identity
+MCPB_SIGN_IDENTITY="<identity hash>" ./scripts/pack.sh
 ```
+
+Pass the hash, not the certificate's name: `pack.sh` prints the identity it signs with,
+and the name is yours.
 
 This server reads nothing that macOS gates behind a privacy permission, so the identity
 matters for stability and distribution, not for a consent dialog.
