@@ -5,49 +5,6 @@ import Synchronization
 /// without waiting and with scripted readings.
 public typealias Sleep = @Sendable (Int) async throws -> Void
 
-/// Returns the first of two outcomes: the work finishing, or the limit passing.
-///
-/// The timer is a dispatch timer, not a `Task.sleep`, and the work is not a child of a task
-/// group. A synchronous system call that never returns holds its thread and cannot be
-/// cancelled, and a task group would wait for it forever; a timer on the cooperative pool
-/// could be starved by the same stuck threads. The stuck work is abandoned, not stopped:
-/// its late result is discarded.
-enum Deadline {
-
-    private final class Outcome<Value: Sendable>: Sendable {
-        private let continuation: Mutex<CheckedContinuation<Value?, Never>?>
-
-        init(_ continuation: CheckedContinuation<Value?, Never>) {
-            self.continuation = Mutex(continuation)
-        }
-
-        /// Only the first caller resumes; the other finds it empty.
-        func resume(returning value: Value?) {
-            continuation.withLock { pending in
-                pending?.resume(returning: value)
-                pending = nil
-            }
-        }
-    }
-
-    /// `nil` when `limit` passed before `work` finished.
-    static func run<Value: Sendable>(
-        within limit: Duration, _ work: @escaping @Sendable () async -> Value
-    ) async -> Value? {
-        let seconds = Double(limit.components.seconds) + Double(limit.components.attoseconds) / 1e18
-        return await withCheckedContinuation { continuation in
-            let outcome = Outcome<Value>(continuation)
-            let task = Task {
-                outcome.resume(returning: await work())
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) {
-                outcome.resume(returning: nil)
-                task.cancel()
-            }
-        }
-    }
-}
-
 /// Routes a `tools/call` to the source and renders the answer.
 ///
 /// Never touches the machine directly: everything goes through `SystemSource`, which is
@@ -60,8 +17,8 @@ public struct SystemTools: ToolHandler {
     private let format = Format()
 
     /// The longest legitimate call is a 5 s sample plus a few readings. The limit stays
-    /// well under the 60 s a client commonly waits, so the answer is ours and not the
-    /// client's generic "no result".
+    /// well under the 60 s a client commonly waits, and so under `ToolStandard.timeLimit`,
+    /// so the answer is ours and not the client's generic "no result".
     public static let defaultTimeout = Duration.seconds(30)
 
     public init(
@@ -133,8 +90,7 @@ public struct SystemTools: ToolHandler {
         case ToolCatalog.batteryName: return try battery()
         case ToolCatalog.disksName: return try await disks(arguments)
         default:
-            throw ToolError.badArgument(
-                name: "name", reason: "'\(parameters.name)' is not a tool of this server")
+            throw ToolError.unknownTool(parameters.name)
         }
     }
 
@@ -164,7 +120,7 @@ public struct SystemTools: ToolHandler {
 
         // Pressure, swap and load are extras: a failure in one leaves the rest of the
         // answer intact, and the output says "unavailable" for it.
-        return format.overview(
+        let text = format.overview(
             .init(
                 kernel: try source.kernel(), hardware: try source.hardware(),
                 memory: try source.memory(), pressure: try? source.memoryPressure(),
@@ -173,6 +129,7 @@ public struct SystemTools: ToolHandler {
                 perCore: perCore
                     ? zip(before, after).map { Metrics.cpuBreakdown(from: $0, to: $1) } : nil,
                 sampleMilliseconds: sample, now: now()))
+        return ToolStandard.withNotices(arguments.notices, text)
     }
 
     // MARK: Processes
@@ -180,11 +137,12 @@ public struct SystemTools: ToolHandler {
     private func processes(_ arguments: Arguments) async throws -> String {
         let sortKey = try arguments.choice(
             "sort_by", among: ToolCatalog.processSortKeys, default: "cpu")
-        let nameFilter = arguments.optionalString("name_contains")?.lowercased()
-        let userFilter = arguments.optionalString("user")?.lowercased()
-        let parentFilter = try arguments.optionalInt("parent_pid").map { Int32(truncatingIfNeeded: $0) }
-        let limit = try arguments.int(
-            "limit", default: ToolCatalog.defaultProcessLimit, in: ToolCatalog.processLimitRange)
+        let nameFilter = try arguments.optionalString("name_contains")?.lowercased()
+        let userFilter = try arguments.optionalString("user")?.lowercased()
+        let parentFilter = try arguments.optionalIdentifier("parent_pid", in: ToolCatalog.pidRange)
+            .map { Int32($0) }
+        let page = try arguments.page(
+            defaultLimit: ToolCatalog.defaultProcessLimit, limits: ToolCatalog.processLimitRange)
         let sample = try arguments.int(
             "sample_ms", default: ToolCatalog.defaultSampleMilliseconds, in: ToolCatalog.sampleRange)
 
@@ -223,10 +181,14 @@ public struct SystemTools: ToolHandler {
         let matching = rows.count
         rows.sort { Self.precedes($0, $1, by: sortKey) }
 
-        return format.processList(
-            rows: Array(rows.prefix(limit)), totalVisible: totalVisible,
-            totalReadable: totalReadable, matching: matching, sortedBy: sortKey,
-            sampleMilliseconds: sample)
+        return ToolStandard.page(
+            of: rows, limit: page.limit, offset: page.offset, things: "processes",
+            notices: arguments.notices
+        ) {
+            format.processList(
+                rows: $0, totalVisible: totalVisible, totalReadable: totalReadable,
+                matching: matching, sortedBy: sortKey, sampleMilliseconds: sample)
+        }
     }
 
     /// Descending for cpu and memory with unreadable rows last, ascending for name and pid.
@@ -258,8 +220,15 @@ public struct SystemTools: ToolHandler {
     // MARK: One process
 
     private func process(_ arguments: Arguments) async throws -> String {
-        let pid = Int32(truncatingIfNeeded: try arguments.requiredInt("pid"))
+        let pid = Int32(try arguments.requiredIdentifier("pid", in: ToolCatalog.pidRange))
         let includeArguments = try arguments.bool("include_arguments", default: false)
+        let children = try arguments.page(
+            defaultLimit: ToolCatalog.defaultChildLimit, limits: ToolCatalog.childLimitRange)
+        let characterOffset = try arguments.int(
+            "character_offset", default: 0, in: ToolCatalog.offsetRange)
+        let maxCharacters = try arguments.int(
+            "max_characters", default: ToolCatalog.defaultMaxCharacters,
+            in: ToolCatalog.maxCharactersRange)
         let sample = try arguments.int(
             "sample_ms", default: ToolCatalog.defaultSampleMilliseconds, in: ToolCatalog.sampleRange)
 
@@ -275,26 +244,32 @@ public struct SystemTools: ToolHandler {
         let detail = second ?? first
         let identity = detail.record.identity
 
-        let children = detail.childPIDs.prefix(10).map { child in
-            (pid: child, name: (try? source.processDetail(pid: child))?.record.identity.name ?? "?")
-        }
+        // By pid, because the system lists children in no order a second page could rely on.
+        let shownChildren = detail.childPIDs.sorted().dropFirst(children.offset).prefix(children.limit)
+            .map { child in
+                (pid: child, name: (try? source.processDetail(pid: child))?.record.identity.name ?? "?")
+            }
         var maskedArguments: [String]?
         if includeArguments, let raw = try source.arguments(pid: pid) {
             maskedArguments = ProcessArguments.redact(raw)
         }
 
-        return format.process(
-            .init(
-                detail: detail,
-                userName: source.userName(userID: identity.userID) ?? "uid \(identity.userID)",
-                parentName: (try? source.processDetail(pid: identity.parentPID))?.record.identity.name,
-                children: Array(children),
-                cpuPercent: second.flatMap {
-                    Metrics.processCPUPercent(
-                        before: first.record.usage, after: $0.record.usage, elapsedNanoseconds: elapsed)
-                },
-                sampleMilliseconds: sample, arguments: maskedArguments,
-                argumentsRequested: includeArguments, exitedDuringSample: second == nil, now: now()))
+        let report = Format.ProcessReport(
+            detail: detail,
+            userName: source.userName(userID: identity.userID) ?? "uid \(identity.userID)",
+            parentName: (try? source.processDetail(pid: identity.parentPID))?.record.identity.name,
+            children: shownChildren, childOffset: children.offset,
+            cpuPercent: second.flatMap {
+                Metrics.processCPUPercent(
+                    before: first.record.usage, after: $0.record.usage, elapsedNanoseconds: elapsed)
+            },
+            sampleMilliseconds: sample, arguments: maskedArguments,
+            argumentsRequested: includeArguments, exitedDuringSample: second == nil, now: now())
+        return ToolStandard.fitting(maxCharacters) {
+            format.process(
+                report, characterOffset: characterOffset, maxCharacters: $0,
+                notices: arguments.notices)
+        }
     }
 
     // MARK: Network
@@ -304,6 +279,8 @@ public struct SystemTools: ToolHandler {
             "sample_ms", default: ToolCatalog.defaultNetworkSampleMilliseconds,
             in: ToolCatalog.networkSampleRange)
         let includeInactive = try arguments.bool("include_inactive", default: false)
+        let page = try arguments.page(
+            defaultLimit: ToolCatalog.defaultInterfaceLimit, limits: ToolCatalog.interfaceLimitRange)
 
         var latest = try source.networkSnapshot()
         var rates: [String: (received: Double?, sent: Double?)]?
@@ -334,19 +311,37 @@ public struct SystemTools: ToolHandler {
                 || (interface.isUp
                     && !(interface.addresses.isEmpty && interface.receivedBytes == 0
                         && interface.sentBytes == 0))
+        }.sorted { Self.namePrecedes($0.name, $1.name) }
+        return ToolStandard.page(
+            of: shown, limit: page.limit, offset: page.offset, things: "interfaces",
+            notices: arguments.notices
+        ) {
+            format.network(
+                interfaces: $0, matching: shown.count, rates: rates, sampleMilliseconds: sample,
+                hidden: latest.interfaces.count - shown.count)
         }
-        return format.network(
-            interfaces: shown, rates: rates, sampleMilliseconds: sample,
-            hidden: latest.interfaces.count - shown.count)
+    }
+
+    /// "en2" before "en10": the order a page of names is given in, the same on every call.
+    static func namePrecedes(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.compare(rhs, options: .numeric) == .orderedAscending
     }
 
     // MARK: Volumes
 
     private func volumes(_ arguments: Arguments) throws -> String {
         let includeHidden = try arguments.bool("include_hidden", default: false)
+        let page = try arguments.page(
+            defaultLimit: ToolCatalog.defaultVolumeLimit, limits: ToolCatalog.volumeLimitRange)
         let all = try source.volumes()
-        let shown = includeHidden ? all : all.filter { !Self.isSystemVolume($0) }
-        return format.volumes(shown, hidden: all.count - shown.count)
+        let shown = (includeHidden ? all : all.filter { !Self.isSystemVolume($0) })
+            .sorted { Self.namePrecedes($0.mountPoint, $1.mountPoint) }
+        return ToolStandard.page(
+            of: shown, limit: page.limit, offset: page.offset, things: "volumes",
+            notices: arguments.notices
+        ) {
+            format.volumes($0, matching: shown.count, hidden: all.count - shown.count)
+        }
     }
 
     /// File systems that are views or plumbing, not storage: `devfs` (/dev), `autofs`,
@@ -369,10 +364,11 @@ public struct SystemTools: ToolHandler {
             "state", among: ToolCatalog.socketStates, default: "listening")
         let transport = try arguments.choice(
             "protocol", among: ToolCatalog.socketProtocols, default: "all")
-        let pidFilter = try arguments.optionalInt("pid").map { Int32(truncatingIfNeeded: $0) }
-        let portFilter = try arguments.optionalInt("port")
-        let limit = try arguments.int(
-            "limit", default: ToolCatalog.defaultConnectionLimit, in: ToolCatalog.connectionLimitRange)
+        let pidFilter = try arguments.optionalIdentifier("pid", in: ToolCatalog.pidRange)
+            .map { Int32($0) }
+        let portFilter = try arguments.optionalIdentifier("port", in: ToolCatalog.portRange)
+        let page = try arguments.page(
+            defaultLimit: ToolCatalog.defaultConnectionLimit, limits: ToolCatalog.connectionLimitRange)
 
         let processes = try source.processSnapshot()
         let readable = processes.records.values.filter { $0.usage != nil }.count
@@ -389,16 +385,22 @@ public struct SystemTools: ToolHandler {
             default: return true
             }
         }.sorted {
-            ($0.localPort, $0.pid, $0.transport.rawValue) < ($1.localPort, $1.pid, $1.transport.rawValue)
-        }
-
-        let rows = matching.prefix(limit).map {
+            // Down to the addresses, so that two sockets never tie and a page boundary
+            // falls in the same place on the next call.
+            ($0.localPort, $0.pid, $0.transport.rawValue, $0.localAddress, $0.remotePort, $0.remoteAddress)
+                < ($1.localPort, $1.pid, $1.transport.rawValue, $1.localAddress, $1.remotePort, $1.remoteAddress)
+        }.map {
             Format.SocketRow(
                 socket: $0, processName: processes.records[$0.pid]?.identity.name ?? "(exited)")
         }
-        return format.connections(
-            rows: Array(rows), matching: matching.count, readableProcesses: readable,
-            visibleProcesses: processes.records.count)
+        return ToolStandard.page(
+            of: matching, limit: page.limit, offset: page.offset, things: "sockets",
+            notices: arguments.notices
+        ) {
+            format.connections(
+                rows: $0, matching: matching.count, readableProcesses: readable,
+                visibleProcesses: processes.records.count)
+        }
     }
 
     // MARK: Battery
@@ -413,6 +415,8 @@ public struct SystemTools: ToolHandler {
         let sample = try arguments.int(
             "sample_ms", default: ToolCatalog.defaultDiskSampleMilliseconds,
             in: ToolCatalog.diskSampleRange)
+        let page = try arguments.page(
+            defaultLimit: ToolCatalog.defaultDiskLimit, limits: ToolCatalog.diskLimitRange)
 
         var latest = try source.diskSnapshot()
         var rates: [UInt64: Format.DiskRate]?
@@ -447,7 +451,15 @@ public struct SystemTools: ToolHandler {
             }
             rates = computed
         }
-        return format.disks(devices: latest.devices, rates: rates, sampleMilliseconds: sample)
+        let devices = latest.devices.sorted {
+            $0.name == $1.name ? $0.id < $1.id : Self.namePrecedes($0.name, $1.name)
+        }
+        return ToolStandard.page(
+            of: devices, limit: page.limit, offset: page.offset, things: "storage drivers",
+            notices: arguments.notices
+        ) {
+            format.disks(devices: $0, matching: devices.count, rates: rates, sampleMilliseconds: sample)
+        }
     }
 
     /// `nil` when a counter went backwards, as with every other rate here.

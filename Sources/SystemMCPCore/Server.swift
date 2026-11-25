@@ -3,11 +3,11 @@ import Foundation
 public enum SystemMCPServer {
 
     public static let name = "apple-system-mcp"
-    public static let version = "1.1.1"
+    public static let version = "1.2.0"
 
     /// Returned from `initialize`. It carries what per-tool descriptions cannot state
-    /// once: that every percentage is a two-reading measurement, and what an ordinary
-    /// process is and is not allowed to read.
+    /// once: that lists come in pages, that every percentage is a two-reading measurement,
+    /// and what an ordinary process is and is not allowed to read.
     public static let instructions = """
         Reads the state of this Mac: processes, CPU, memory, network interfaces, mounted \
         volumes, open sockets, the battery and storage activity, through the system's own \
@@ -20,10 +20,24 @@ public enum SystemMCPServer {
         system_battery reports the power source and battery, and system_disks the read and \
         write activity of each drive.
 
+        LISTS COME IN PAGES. system_processes, system_connections, system_network, \
+        system_volumes and system_disks return one page of rows, and system_process lists \
+        a process's children the same way. When rows exist that a result does not hold, its \
+        first lines say how many there are and the offset of the next page: pass limit and \
+        offset. A long argument listing in system_process is read one window at a time with \
+        character_offset and max_characters. A size, a count or a wait outside its range is \
+        moved to the nearest allowed value, and the first lines say which one was used; a \
+        pid or a port outside its range is refused.
+
         TWO READINGS PER PERCENTAGE. CPU use, a process's CPU % and network and disk rates \
         are measured between two readings taken sample_ms apart. Each tool takes both itself, \
-        so those calls take at least that long (default 500 ms, up to 5000). A longer \
-        sample smooths bursts. CPU % is of ONE core: 100 is one core busy, 400 is four.
+        so those calls take at least that long: by default \
+        \(ToolCatalog.defaultSampleMilliseconds) ms for CPU, \
+        \(ToolCatalog.defaultNetworkSampleMilliseconds) ms for network rates and \
+        \(ToolCatalog.defaultDiskSampleMilliseconds) ms for disk rates, and at most \
+        \(ToolCatalog.longestSampleMilliseconds) ms. A longer sample smooths bursts; sample_ms 0 \
+        on system_network or system_disks returns totals only. CPU % is of ONE core: 100 is \
+        one core busy, 400 is four.
 
         WHAT AN ORDINARY PROCESS MAY READ. This server runs as the person who started \
         it. macOS lets such a process list every process with its name, path, owner and \
@@ -32,9 +46,10 @@ public enum SystemMCPServer {
         many rows are affected. That is a property of the machine, not a fault, and not \
         something to work around. system_status reports the split.
 
-        EVERY CALL IS BOUNDED. A call that has not finished after 30 seconds is abandoned \
-        and answered with an error saying so; nothing is changed, because nothing is ever \
-        written. Retry with a lower sample_ms or a narrower filter.
+        EVERY CALL IS BOUNDED. A call that has not finished after \
+        \(SystemTools.defaultTimeout.components.seconds) seconds is abandoned and answered \
+        with an error saying so; nothing is changed, because nothing is ever written. Retry \
+        with a lower sample_ms or a narrower filter.
 
         pids are reused and go stale quickly: list again before using one seen a while ago.
 

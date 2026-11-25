@@ -158,7 +158,8 @@ struct ToolsTests {
     func processFilters() async {
         let byName = await call("system_processes", ["name_contains": .string("ALP")], source: listing())
         #expect(byName.text.contains("alpha") && !byName.text.contains("beta"))
-        #expect(byName.text.contains("Showing 1 of 1 matching"))
+        #expect(byName.text.contains("1 matching"))
+        #expect(!byName.text.contains("Showing"))
 
         let byUser = await call("system_processes", ["user": .string("root")], source: listing())
         #expect(byUser.text.contains("gamma") && !byUser.text.contains("alpha"))
@@ -170,10 +171,11 @@ struct ToolsTests {
         #expect(byParent.text.contains("beta") && !byParent.text.contains("alpha"))
     }
 
-    @Test("limit caps the rows and the header still reports how many matched")
+    @Test("limit caps the rows, and a notice before them says how many match and where the next page starts")
     func processLimit() async {
         let result = await call("system_processes", ["limit": .int(2)], source: listing())
-        #expect(result.text.contains("Showing 2 of 3 matching"))
+        #expect(result.text.hasPrefix("Showing 1–2 of 3 processes. Pass offset=2 for the next page.\n\n"))
+        #expect(result.text.contains("3 matching"))
         #expect(!result.text.contains("gamma"))
     }
 

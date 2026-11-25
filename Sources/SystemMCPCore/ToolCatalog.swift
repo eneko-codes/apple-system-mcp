@@ -15,16 +15,42 @@ public enum ToolCatalog {
     public static let batteryName = "system_battery"
     public static let disksName = "system_disks"
 
-    public static let sampleRange = 100...5000
-    public static let networkSampleRange = 0...5000
+    /// The longest wait between two readings, the same for every tool that takes two.
+    public static let longestSampleMilliseconds = 5000
+    public static let sampleRange = 100...longestSampleMilliseconds
+    public static let networkSampleRange = 0...longestSampleMilliseconds
     public static let defaultSampleMilliseconds = 500
     public static let defaultNetworkSampleMilliseconds = 1000
-    public static let diskSampleRange = 0...5000
+    public static let diskSampleRange = 0...longestSampleMilliseconds
     public static let defaultDiskSampleMilliseconds = 1000
+
+    /// Identifiers. A value outside one of these is refused, never moved.
+    public static let pidRange = 0...10_000_000
+    public static let portRange = 1...65_535
+
+    // Pages. Each maximum is a number of rows of ordinary width that fits
+    // `ToolStandard.longestResult` with room to spare, and each default makes a call with
+    // no argument about `ToolStandard.usualPage` or less. `BoundsTests` renders a full page
+    // of the widest ordinary rows of every listing to hold both to that.
+    public static let offsetRange = 0...10_000_000
     public static let processLimitRange = 1...200
     public static let defaultProcessLimit = 25
-    public static let connectionLimitRange = 1...500
-    public static let defaultConnectionLimit = 100
+    public static let connectionLimitRange = 1...200
+    public static let defaultConnectionLimit = 50
+    public static let interfaceLimitRange = 1...100
+    public static let defaultInterfaceLimit = 25
+    public static let volumeLimitRange = 1...200
+    public static let defaultVolumeLimit = 50
+    public static let diskLimitRange = 1...100
+    public static let defaultDiskLimit = 25
+    public static let childLimitRange = 1...100
+    public static let defaultChildLimit = 10
+
+    /// The window on a process's argument listing. The maximum is half the longest result,
+    /// so a window of ordinary text leaves room for the rest of the report;
+    /// `Format.fitting` shrinks one whose characters take more UTF-16 units than that.
+    public static let maxCharactersRange = 1...(ToolStandard.longestResult / 2)
+    public static let defaultMaxCharacters = ToolStandard.usualPage
 
     public static let processSortKeys = ["cpu", "memory", "name", "pid"]
     public static let socketStates = ["listening", "established", "all"]
@@ -90,6 +116,16 @@ public enum ToolCatalog {
         short bursts; the call takes at least this long.
         """
 
+    private static func limit(_ things: String, range: ClosedRange<Int>, default def: Int) -> Value {
+        integer("Maximum number of \(things) in one page.", range: range, default: def)
+    }
+
+    private static let offset = integer(
+        """
+        Number of rows to skip. A result that does not hold every row says, in its first \
+        lines, the offset to pass for the next page.
+        """, range: offsetRange, default: 0)
+
     private static let readOnly = Tool.Annotations(
         readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
 
@@ -116,7 +152,8 @@ public enum ToolCatalog {
         description: """
             The machine as a whole: macOS version and uptime, chip and core layout, CPU \
             use measured over a short sample, load average, memory (in use, pressure, \
-            wired, compressed, file cache, free) and swap.
+            wired, compressed, file cache, free) and swap. The busy share of each core is \
+            left out unless per_core is set.
 
             CPU use is a measurement between two readings taken sample_ms apart, so the \
             call takes at least that long. Memory 'in use' is an approximation: the system \
@@ -124,8 +161,6 @@ public enum ToolCatalog {
             compressed pages and is labelled as such. Pressure is the system's own \
             verdict (normal, warning, critical) and is the better signal of trouble than \
             the amount in use.
-
-            Pass per_core to also list the busy share of each core.
             """,
         inputSchema: object(properties: [
             "sample_ms": integer(sampleHelp, range: sampleRange, default: defaultSampleMilliseconds),
@@ -137,9 +172,15 @@ public enum ToolCatalog {
         name: processesName,
         title: "List processes with CPU and memory",
         description: """
-            Lists the running processes with CPU %, memory, thread count, owner and name, \
-            sorted by cpu, memory, name or pid, optionally filtered by name, owner or \
-            parent.
+            Lists the running processes, \(defaultProcessLimit) to a page, the ones using the \
+            most CPU first, each with pid, CPU %, memory, thread count, owner and name. When \
+            more match than the page holds, the first lines of the result say how many \
+            there are and the offset of the next page: pass limit (up to \
+            \(processLimitRange.upperBound)) and offset for the rest. sort_by orders by \
+            memory, name or pid instead; name_contains, user and parent_pid filter.
+
+            Every call takes a new sample, so the CPU order can shift between two pages. \
+            Sort by pid or name when every process has to be seen exactly once.
 
             CPU % is measured between two readings sample_ms apart and is a percentage of \
             ONE core: 100 is one core fully busy, and a process using four cores can show \
@@ -155,15 +196,13 @@ public enum ToolCatalog {
             """,
         inputSchema: object(properties: [
             "sort_by": choice(
-                "What to sort by: 'cpu' and 'memory' are descending, 'name' and 'pid' ascending.",
+                "What to order by: 'cpu' and 'memory' are descending, 'name' and 'pid' ascending. Ties go by pid.",
                 processSortKeys, default: "cpu"),
             "name_contains": string("Only processes whose name contains this text, ignoring case."),
             "user": string("Only processes owned by this user name, or by this numeric uid."),
-            "parent_pid": integer(
-                "Only the direct children of this pid.", range: 0...10_000_000),
-            "limit": integer(
-                "Maximum number of processes to return.", range: processLimitRange,
-                default: defaultProcessLimit),
+            "parent_pid": integer("Only the direct children of this pid.", range: pidRange),
+            "limit": limit("processes", range: processLimitRange, default: defaultProcessLimit),
+            "offset": offset,
             "sample_ms": integer(sampleHelp, range: sampleRange, default: defaultSampleMilliseconds),
         ]),
         annotations: readOnly)
@@ -174,8 +213,15 @@ public enum ToolCatalog {
         description: """
             Everything readable about one process by pid: state, executable path, owner, \
             parent, start time, CPU rate and total CPU time, memory footprint, threads, \
-            disk bytes read and written, open descriptor count, working directory and \
-            children.
+            disk bytes read and written, open descriptor count, working directory and its \
+            first \(defaultChildLimit) children by pid. Command-line arguments are left out \
+            unless include_arguments is set.
+
+            The first lines of the result say what it does not hold and how to get it: \
+            pass limit (up to \(childLimitRange.upperBound)) and offset for more children, \
+            and character_offset and max_characters (default \(defaultMaxCharacters), up to \
+            \(maxCharactersRange.upperBound)) to read a long argument listing one window at \
+            a time.
 
             CPU rate is measured over sample_ms and is a percentage of one core. For a \
             process of another user or of the system only the identity fields are \
@@ -189,10 +235,25 @@ public enum ToolCatalog {
             """,
         inputSchema: object(
             properties: [
-                "pid": integer("Process id, from system_processes.", range: 0...10_000_000),
+                "pid": integer("Process id, from system_processes.", range: pidRange),
                 "include_arguments": boolean(
                     "Also return the command-line arguments, with likely secrets masked.",
                     default: false),
+                "limit": limit("children", range: childLimitRange, default: defaultChildLimit),
+                "offset": integer(
+                    """
+                    Number of children to skip. A result that does not list every child \
+                    says, in its first lines, the offset to pass for the next page.
+                    """, range: offsetRange, default: 0),
+                "character_offset": integer(
+                    """
+                    With include_arguments: number of characters of the argument listing to \
+                    skip. A result that does not hold all of it says, in its first lines, \
+                    the value to pass for the rest.
+                    """, range: offsetRange, default: 0),
+                "max_characters": integer(
+                    "With include_arguments: the most characters of the argument listing to return.",
+                    range: maxCharactersRange, default: defaultMaxCharacters),
                 "sample_ms": integer(sampleHelp, range: sampleRange, default: defaultSampleMilliseconds),
             ], required: ["pid"]),
         annotations: readOnly)
@@ -201,12 +262,15 @@ public enum ToolCatalog {
         name: networkName,
         title: "Network interfaces and traffic",
         description: """
-            Network interfaces with their addresses and 64-bit cumulative counters of bytes, \
-            packets and errors since boot, plus the current rate in each direction when \
-            sample_ms is above zero.
+            Network interfaces, \(defaultInterfaceLimit) to a page in name order, with their \
+            addresses and 64-bit cumulative counters of bytes, packets and errors since \
+            boot, plus the current rate in each direction when sample_ms is above zero. \
+            Interfaces that are down, or have no address and no traffic, are left out and \
+            counted; include_inactive lists them. When there are more than the page holds, \
+            the first lines of the result give the offset of the next page: pass limit (up \
+            to \(interfaceLimitRange.upperBound)) and offset.
 
-            Only interfaces that are up and have an address or traffic are listed unless \
-            include_inactive is set. Counters are totals for the interface, not per process: \
+            Counters are totals for the interface, not per process: \
             the system offers no per-process traffic figure through this interface.
             """,
         inputSchema: object(properties: [
@@ -216,6 +280,8 @@ public enum ToolCatalog {
             "include_inactive": boolean(
                 "Also list interfaces that are down or have no address and no traffic.",
                 default: false),
+            "limit": limit("interfaces", range: interfaceLimitRange, default: defaultInterfaceLimit),
+            "offset": offset,
         ]),
         annotations: readOnly)
 
@@ -223,17 +289,22 @@ public enum ToolCatalog {
         name: volumesName,
         title: "Mounted volumes and free space",
         description: """
-            Mounted volumes with file system, device, total size and the space an ordinary \
-            process may use. System-internal mounts (devfs, autofs, nullfs, devicefs and the \
-            helper volumes under /System/Volumes other than Data) are hidden unless \
-            include_hidden is set.
+            Mounted volumes, \(defaultVolumeLimit) to a page in mount point order, with file \
+            system, device, total size and the space an ordinary process may use. \
+            System-internal mounts (devfs, autofs, nullfs, devicefs and the helper volumes \
+            under /System/Volumes other than Data) are left out and counted; include_hidden \
+            lists them. When there are more than the page holds, the first lines of the \
+            result give the offset of the next page: pass limit (up to \
+            \(volumeLimitRange.upperBound)) and offset.
 
             The available figure can differ from the space Finder reports, because Finder \
             also counts purgeable files as available. Reading the list does not wait on a \
             network volume that has stopped answering.
             """,
         inputSchema: object(properties: [
-            "include_hidden": boolean("Also list system-internal volumes.", default: false)
+            "include_hidden": boolean("Also list system-internal volumes.", default: false),
+            "limit": limit("volumes", range: volumeLimitRange, default: defaultVolumeLimit),
+            "offset": offset,
         ]),
         annotations: readOnly)
 
@@ -241,15 +312,18 @@ public enum ToolCatalog {
         name: connectionsName,
         title: "Open TCP and UDP sockets by process",
         description: """
-            Open TCP and UDP sockets with local and remote address, TCP state and the \
-            process that owns each. Use it to find which process is listening on a port or \
-            which one holds a connection.
+            Open TCP and UDP sockets waiting for traffic, \(defaultConnectionLimit) to a page \
+            in local port order, each with local and remote address, TCP state and the \
+            process that owns it. Use it to find which process is listening on a port or \
+            which one holds a connection. Connections in use are left out unless state is \
+            'established' or 'all'. When more match than the page holds, the first lines of \
+            the result say how many there are and the offset of the next page: pass limit \
+            (up to \(connectionLimitRange.upperBound)) and offset.
 
-            By default only sockets waiting for traffic are listed (TCP in LISTEN, UDP bound \
-            to a port with no peer); pass state 'established' or 'all' for the rest. UDP \
-            sockets that were created but never bound have no port and are only listed \
-            with state 'all'. Filter by pid, by port \
-            (matches local or remote) or by protocol.
+            Waiting for traffic means TCP in LISTEN, or UDP bound to a port with no peer. \
+            UDP sockets that were created but never bound have no port and are only listed \
+            with state 'all'. Filter by pid, by port (matches local or remote) or by \
+            protocol.
 
             What an ordinary process may read: sockets are only visible for processes of \
             the same user, so a service run by root or another user does not appear. The \
@@ -260,13 +334,10 @@ public enum ToolCatalog {
                 "'listening' (default): sockets waiting for traffic; 'established': TCP connections in use; 'all'.",
                 socketStates, default: "listening"),
             "protocol": choice("Transport to list.", socketProtocols, default: "all"),
-            "pid": integer(
-                "Only the sockets of this process.", range: 0...10_000_000),
-            "port": integer(
-                "Only sockets whose local or remote port is this.", range: 1...65_535),
-            "limit": integer(
-                "Maximum number of sockets to return.", range: connectionLimitRange,
-                default: defaultConnectionLimit),
+            "pid": integer("Only the sockets of this process.", range: pidRange),
+            "port": integer("Only sockets whose local or remote port is this.", range: portRange),
+            "limit": limit("sockets", range: connectionLimitRange, default: defaultConnectionLimit),
+            "offset": offset,
         ]),
         annotations: readOnly)
 
@@ -293,9 +364,12 @@ public enum ToolCatalog {
         title: "Disk throughput and latency",
         description: """
             Read and write activity of each storage driver (the internal drive, an \
-            external disk): bytes and operations since the driver started, and, measured \
-            between two readings sample_ms apart, bytes per second, operations per second \
-            and the average time one operation took.
+            external disk, a mounted disk image), \(defaultDiskLimit) to a page in name \
+            order: bytes and operations since the driver started, and, measured between two \
+            readings sample_ms apart, bytes per second, operations per second and the \
+            average time one operation took. When there are more than the page holds, the \
+            first lines of the result give the offset of the next page: pass limit (up to \
+            \(diskLimitRange.upperBound)) and offset.
 
             A drive is named by its BSD name (disk0), never by model or serial number. \
             These are whole-drive counters: the system offers no per-process or per-file \
@@ -305,7 +379,9 @@ public enum ToolCatalog {
         inputSchema: object(properties: [
             "sample_ms": integer(
                 "Milliseconds between the two readings a rate needs; 0 returns totals only.",
-                range: diskSampleRange, default: defaultDiskSampleMilliseconds)
+                range: diskSampleRange, default: defaultDiskSampleMilliseconds),
+            "limit": limit("storage drivers", range: diskLimitRange, default: defaultDiskLimit),
+            "offset": offset,
         ]),
         annotations: readOnly)
 }

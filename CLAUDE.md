@@ -20,7 +20,9 @@ Read-only server — there is nothing to modify or delete, and nothing is config
 
 A local MCP server (Swift 6, stdio transport) that reads the state of a Mac: processes, CPU, memory, network interfaces, mounted volumes, open sockets, the battery and storage activity, through libproc, sysctl, Mach, `getifaddrs`, `getfsstat` and IOKit. No Apple events, no helper programs, no shell, no network, no write of any kind, no user configuration, **no third-party dependency**: `Package.swift` lists none, and the MCP protocol (JSON-RPC over stdio) is `MCPServer.swift` over Foundation. Adding a package needs the owner's say-so.
 
-**`MCPServer.swift`, `Value.swift` and `Tests/…/MCPProtocolTests.swift` are copied unchanged into every one of the owner's MCP servers** (the test file differs only in its `@testable import`). A change to one is made to every copy in the same piece of work; never let a copy drift.
+**`MCPServer.swift`, `Value.swift`, `ToolStandard.swift` and the tests `MCPProtocolTests.swift` and `ToolStandardTests.swift` are copied unchanged into every one of the owner's MCP servers** (the test files differ only in their `@testable import`). A change to one is made to every copy in the same piece of work; never let a copy drift.
+
+`ToolStandard.swift` holds what every tool here must keep to: the longest result, description and error, the time a call may take, the fixed wording of each notice that says what a result left out (`Notice`), and the guard `MCPServer.swift` passes every result through. A tool bounds its own result and says how to get the rest; the guard only catches the one that forgot.
 
 ## System interfaces
 
@@ -68,6 +70,8 @@ swift test
 **Apple silicon only, deliberately.** `scripts/pack.sh` builds for arm64 alone — a plain `swift build -c release`, no `--arch` flags — and fails if the binary holds any other architecture. A universal build doubles the bundle for an architecture macOS 26 is the last release to support. Do not add an x86_64 slice back.
 
 `SystemSource` is the only door to the machine. `DarwinSystemSource` implements it over the C interfaces; tests implement it with `FakeSystemSource`. Tools take two readings through the source and compute rates in `Metrics`, which is pure.
+
+**How a tool keeps to the tool standard here.** Sizes are constants in `ToolCatalog`, and the schemas, the descriptions and the instructions quote them by interpolation, never as literals. `Arguments.int` moves a quantity (`limit`, `offset`, `sample_ms`, a window) into its range and collects the sentence that says so in `notices`; `Arguments.optionalIdentifier` refuses a pid or a port outside its range, because the nearest one would name something else. A listing sorts its rows into an order it states, then goes through `Format.page`, which puts the notices and the page's position (`Notice.page`) before the data. `system_process` windows its argument listing with `ToolStandard.window`. Both render through `Format.fitting`, which halves a page or a window whose text would still be longer than a result may be, so a tool never leans on the guard. `BoundsTests` holds every bound, notice and length to this: a new listing takes `limit` and `offset` through `Arguments.page` and gets an entry in its `listings`.
 
 ## Release checklist
 

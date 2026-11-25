@@ -3,9 +3,11 @@ import Foundation
 public enum ToolError: Error, Equatable {
     case missingArgument(String)
     case badArgument(name: String, reason: String)
+    case unknownTool(String)
     case processNotFound(pid: Int32)
     case systemFailure(function: String, code: Int32)
     case timedOut(seconds: Int)
+
 
     public var message: String {
         switch self {
@@ -24,6 +26,9 @@ public enum ToolError: Error, Equatable {
 
         case .badArgument(let name, let reason):
             return "Argument '\(name)' is not valid: \(reason)"
+
+        case .unknownTool(let name):
+            return "'\(ToolStandard.echo(name))' is not a tool of this server."
 
         case .processNotFound(let pid):
             return """

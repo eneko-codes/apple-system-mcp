@@ -65,6 +65,26 @@ struct FormatTests {
         #expect(text.contains("no process matches"))
     }
 
+    @Test("A value wider than its column still ends in a space, so two columns never run together")
+    func wideValuesStaySeparate() {
+        #expect(Format.column("abc", to: 6) == "abc   ")
+        #expect(Format.column("abcdef", to: 6) == "abcdef ")
+        let row = Format.SocketRow(
+            socket: SocketRecord(
+                pid: 7, transport: .tcp, localAddress: "2001:db8:85a3:8d3:1319:8a2e:370:7348",
+                localPort: 8080, remoteAddress: "::", remotePort: 0, state: "LISTEN"),
+            processName: "alpha")
+        let sockets = Format().connections(rows: [row], matching: 1, readableProcesses: 1, visibleProcesses: 1)
+        #expect(sockets.contains("7348:8080 - "))
+        let process = Format.ProcessRow(
+            record: Sample.record(pid: 7, name: "alpha", usage: nil), userName: "_invented_daemon",
+            cpuPercent: nil)
+        let processes = Format().processList(
+            rows: [process], totalVisible: 1, totalReadable: 0, matching: 1, sortedBy: "pid",
+            sampleMilliseconds: 500)
+        #expect(processes.contains("_invented_daemon alpha"))
+    }
+
     @Test("Padding never truncates")
     func padding() {
         #expect(Format.pad("abc", to: 2) == "abc")

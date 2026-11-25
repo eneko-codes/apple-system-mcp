@@ -50,6 +50,14 @@ struct VersionTests {
         }
     }
 
+    /// The manifest is plain JSON and cannot take the figure from the constant, so this
+    /// holds the one bound it states to the one the code enforces.
+    @Test("The manifest states the deadline the server enforces")
+    func manifestStatesTheDeadline() throws {
+        let description = try #require(try manifest()["long_description"] as? String)
+        #expect(description.contains("after \(SystemTools.defaultTimeout.components.seconds) seconds"))
+    }
+
     @Test("The manifest asks for no user configuration, because the server reads none")
     func noUserConfig() throws {
         let manifest = try manifest()
