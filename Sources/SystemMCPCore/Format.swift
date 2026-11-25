@@ -13,6 +13,12 @@ public struct Format: Sendable {
         return shortfall > 0 ? text + String(repeating: " ", count: shortfall) : text
     }
 
+    /// A left-aligned column that always ends in a space, so a value as wide as the column
+    /// or wider (an IPv6 address, a long user name) never runs into the next one.
+    static func column(_ text: String, to width: Int) -> String {
+        pad(text, to: width - 1) + " "
+    }
+
     static func padLeft(_ text: String, to width: Int) -> String {
         let shortfall = width - text.count
         return shortfall > 0 ? String(repeating: " ", count: shortfall) + text : text
@@ -216,14 +222,14 @@ public struct Format: Sendable {
         text += "\nShowing \(rows.count) of \(matching) matching.\n\n"
         text += "  " + Self.padLeft("PID", to: 7) + Self.padLeft("CPU %", to: 8)
             + Self.padLeft("MEMORY", to: 10) + Self.padLeft("THREADS", to: 9) + "  "
-            + Self.pad("USER", to: 12) + "NAME\n"
+            + Self.column("USER", to: 12) + "NAME\n"
         text += rows.map { row in
             let usage = row.record.usage
             return "  " + Self.padLeft(String(row.record.identity.pid), to: 7)
                 + Self.padLeft(row.cpuPercent.map { String(format: "%.1f", $0) } ?? "n/a", to: 8)
                 + Self.padLeft(usage.map { Self.bytes($0.footprintBytes) } ?? "n/a", to: 10)
                 + Self.padLeft(usage.map { String($0.threadCount) } ?? "n/a", to: 9) + "  "
-                + Self.pad(Self.oneLine(row.userName), to: 12) + Self.oneLine(row.record.identity.name)
+                + Self.column(Self.oneLine(row.userName), to: 12) + Self.oneLine(row.record.identity.name)
         }.joined(separator: "\n")
         return text
     }
@@ -391,14 +397,14 @@ public struct Format: Sendable {
         }
         guard !rows.isEmpty else { return text + "\n\n  (none)" }
         text += "\nShowing \(rows.count).\n\n"
-        text += "  " + Self.pad("PROTO", to: 6) + Self.pad("LOCAL", to: 30) + Self.pad("REMOTE", to: 30)
-            + Self.pad("STATE", to: 13) + Self.padLeft("PID", to: 7) + "  PROCESS\n"
+        text += "  " + Self.column("PROTO", to: 6) + Self.column("LOCAL", to: 30) + Self.column("REMOTE", to: 30)
+            + Self.column("STATE", to: 13) + Self.padLeft("PID", to: 7) + "  PROCESS\n"
         text += rows.map { row in
             let socket = row.socket
             let remote = socket.remotePort == 0 ? "-" : "\(socket.remoteAddress):\(socket.remotePort)"
-            return "  " + Self.pad(socket.transport.rawValue.uppercased(), to: 6)
-                + Self.pad("\(socket.localAddress):\(socket.localPort)", to: 30) + Self.pad(remote, to: 30)
-                + Self.pad(socket.state ?? "-", to: 13) + Self.padLeft(String(socket.pid), to: 7)
+            return "  " + Self.column(socket.transport.rawValue.uppercased(), to: 6)
+                + Self.column("\(socket.localAddress):\(socket.localPort)", to: 30) + Self.column(remote, to: 30)
+                + Self.column(socket.state ?? "-", to: 13) + Self.padLeft(String(socket.pid), to: 7)
                 + "  " + Self.oneLine(row.processName)
         }.joined(separator: "\n")
         return text
